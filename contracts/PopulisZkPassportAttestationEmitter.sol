@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.22;
 
+import {ERC2771Context} from "@openzeppelin/contracts/metatx/ERC2771Context.sol";
+
 interface IZkPassportVerifierAdapter {
     struct VaultAttestation {
         bytes32 vaultLauncherId;
@@ -25,7 +27,7 @@ interface IZkPassportVerifierAdapter {
     ) external returns (bool);
 }
 
-contract PopulisZkPassportAttestationEmitter {
+contract PopulisZkPassportAttestationEmitter is ERC2771Context {
     uint16 public constant POLICY_VERSION = 1;
     uint64 public constant MAX_PROOF_AGE_SECONDS = 7 days;
     bytes16 private constant HEX_SYMBOLS = "0123456789abcdef";
@@ -59,7 +61,11 @@ contract PopulisZkPassportAttestationEmitter {
     error InvalidZkPassportProof();
     error InvalidBridgeCoinId(bytes32 expected, bytes32 actual);
 
-    constructor(address verifier_, bytes32 bridgePolicyHash_) {
+    constructor(
+        address verifier_,
+        bytes32 bridgePolicyHash_,
+        address trustedForwarder_
+    ) ERC2771Context(trustedForwarder_) {
         if (verifier_ == address(0)) revert ZeroAddress("verifier");
         if (bridgePolicyHash_ == bytes32(0)) revert ZeroBytes32("bridgePolicyHash");
         verifier = IZkPassportVerifierAdapter(verifier_);
@@ -80,7 +86,7 @@ contract PopulisZkPassportAttestationEmitter {
         if (!ok) revert InvalidZkPassportProof();
 
         emit VaultAttestationVerified(
-            msg.sender,
+            _msgSender(),
             attestation.vaultLauncherId,
             attestation.scopedNullifier,
             attestation.nullifierType,

@@ -27,7 +27,6 @@ contract TestableZkPassportRealVerifierAdapter is ZkPassportRealVerifierAdapter 
         params.serviceConfig.scope = expectedServiceSubscope;
         params.serviceConfig.devMode = devMode;
         params.serviceConfig.validityPeriodInSeconds = DEFAULT_VALIDITY_SECONDS;
-        params.serviceConfig.oprfPubKeyHash = ZERO_OPRF_KEY_HASH;
 
         (bool valid, , address helperAddr) = IZKPassportRootVerifier(_testVerifier).verify(params);
 

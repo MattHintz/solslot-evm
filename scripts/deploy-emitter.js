@@ -74,9 +74,21 @@ async function main() {
     console.log(`\nUsing verifier adapter at     : ${verifierAddress}`);
   }
 
+  let forwarderAddress = process.env.FORWARDER_ADDR;
+  if (!forwarderAddress) {
+    console.log('\nDeploying PopulisForwarder (ERC-2771 trusted forwarder)…');
+    const ForwarderFactory = await ethers.getContractFactory('PopulisForwarder');
+    const forwarder = await ForwarderFactory.deploy();
+    await forwarder.waitForDeployment();
+    forwarderAddress = await forwarder.getAddress();
+    console.log(`PopulisForwarder : ${forwarderAddress}`);
+  } else {
+    console.log(`\nUsing forwarder at            : ${forwarderAddress}`);
+  }
+
   console.log('\nDeploying PopulisZkPassportAttestationEmitter…');
   const EmitterFactory = await ethers.getContractFactory('PopulisZkPassportAttestationEmitter');
-  const emitter = await EmitterFactory.deploy(verifierAddress, bridgePolicyHash);
+  const emitter = await EmitterFactory.deploy(verifierAddress, bridgePolicyHash, forwarderAddress);
   await emitter.waitForDeployment();
   const emitterAddress = await emitter.getAddress();
 
@@ -89,6 +101,7 @@ async function main() {
   console.log(`  Block          : ${receipt.blockNumber}`);
   console.log(`  Bridge policy  : ${bridgePolicyHash} (constructor arg)`);
   console.log(`  Verifier       : ${verifierAddress} (constructor arg)`);
+  console.log(`  Forwarder      : ${forwarderAddress} (constructor arg, ERC-2771)`);
 
   console.log('\n── Add to portal environment.ts ──────────────────────────────────────────');
   console.log(`zkPassport: {`);
@@ -96,6 +109,7 @@ async function main() {
   console.log(`  evmRpcUrl: '${network.config.url || 'http://127.0.0.1:8545'}',`);
   console.log(`  attestationEmitterAddress: '${emitterAddress}',`);
   console.log(`  attestationEmitterFromBlock: ${receipt.blockNumber},`);
+  console.log(`  trustedForwarderAddress: '${forwarderAddress}',`);
   console.log(`  bridgeParentId: '0x<chia-coin-parent-id>',`);
   console.log(`  bridgeAmount: 1,`);
   console.log(

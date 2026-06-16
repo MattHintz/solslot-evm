@@ -20,7 +20,6 @@ struct ServiceConfig {
     string domain;
     string scope;
     bool devMode;
-    bytes32 oprfPubKeyHash;
 }
 
 struct ProofVerificationParams {
@@ -74,8 +73,6 @@ contract ZkPassportRealVerifierAdapter is IZkPassportVerifierAdapter {
     address public constant ZKPASSPORT_ROOT_VERIFIER =
         0x1D000001000EFD9a6371f4d90bB8920D5431c0D8;
 
-    bytes32 public constant ZERO_OPRF_KEY_HASH = bytes32(0);
-
     uint256 public constant DEFAULT_VALIDITY_SECONDS = 7 days;
 
     string public domain;
@@ -117,7 +114,6 @@ contract ZkPassportRealVerifierAdapter is IZkPassportVerifierAdapter {
         params.serviceConfig.scope = expectedServiceSubscope;
         params.serviceConfig.devMode = devMode;
         params.serviceConfig.validityPeriodInSeconds = DEFAULT_VALIDITY_SECONDS;
-        params.serviceConfig.oprfPubKeyHash = ZERO_OPRF_KEY_HASH;
 
         IZKPassportRootVerifier rootVerifier = IZKPassportRootVerifier(ZKPASSPORT_ROOT_VERIFIER);
         (bool valid, , address helperAddr) = rootVerifier.verify(params);
