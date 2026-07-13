@@ -1,6 +1,7 @@
 const { expect } = require('chai');
 const { ethers } = require('hardhat');
 const { time } = require('@nomicfoundation/hardhat-network-helpers');
+const { anyValue } = require('@nomicfoundation/hardhat-chai-matchers/withArgs');
 
 const BRIDGE_POLICY_HASH = `0x${'55'.repeat(32)}`;
 const PROOF = '0x123456';
@@ -151,5 +152,76 @@ describe('SolslotZkPassportAttestationEmitter', () => {
     await expect(emitter.verifyAndEmit(binding({ bridgeAmount: 0 }), PROOF))
       .to.be.revertedWithCustomError(emitter, 'ZeroAmount')
       .withArgs('bridgeAmount');
+  });
+
+  it('executes a proof through the V2-only forwarder domain', async () => {
+    const [owner, relayer] = await ethers.getSigners();
+    const Forwarder = await ethers.getContractFactory('SolslotForwarder');
+    const forwarder = await Forwarder.deploy();
+    const MockVerifier = await ethers.getContractFactory('MockSolslotZkPassportVerifierAdapter');
+    const verifier = await MockVerifier.deploy();
+    const Emitter = await ethers.getContractFactory('SolslotZkPassportAttestationEmitter');
+    const emitter = await Emitter.deploy(
+      await verifier.getAddress(),
+      BRIDGE_POLICY_HASH,
+      await forwarder.getAddress(),
+    );
+    const timestamp = await time.latest();
+    await verifier.setFields(proofFields(timestamp));
+
+    const data = emitter.interface.encodeFunctionData('verifyAndEmit', [binding(), PROOF]);
+    const nonce = await forwarder.nonces(owner.address);
+    const deadline = BigInt(timestamp + 1800);
+    const request = {
+      from: owner.address,
+      to: await emitter.getAddress(),
+      value: 0n,
+      gas: 1_800_000n,
+      deadline,
+      data,
+    };
+    const signature = await owner.signTypedData(
+      {
+        name: 'SolslotForwarder',
+        version: '2',
+        chainId: (await ethers.provider.getNetwork()).chainId,
+        verifyingContract: await forwarder.getAddress(),
+      },
+      {
+        ForwardRequest: [
+          { name: 'from', type: 'address' },
+          { name: 'to', type: 'address' },
+          { name: 'value', type: 'uint256' },
+          { name: 'gas', type: 'uint256' },
+          { name: 'nonce', type: 'uint256' },
+          { name: 'deadline', type: 'uint48' },
+          { name: 'data', type: 'bytes' },
+        ],
+      },
+      { ...request, nonce },
+    );
+
+    const domain = await forwarder.eip712Domain();
+    expect(domain.name).to.equal('SolslotForwarder');
+    expect(domain.version).to.equal('2');
+    await expect(forwarder.connect(relayer).execute({ ...request, signature }))
+      .to.emit(emitter, 'VaultAttestationVerified')
+      .withArgs(
+        owner.address,
+        binding().vaultLauncherId,
+        b32('22'),
+        1,
+        b32('33'),
+        b32('44'),
+        timestamp,
+        anyValue,
+        anyValue,
+        binding().bridgeParentId,
+        1,
+        anyValue,
+        anyValue,
+        BRIDGE_POLICY_HASH,
+        2,
+      );
   });
 });

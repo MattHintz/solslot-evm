@@ -7,6 +7,7 @@
     "compile": "hardhat compile",
     "test": "hardhat test",
     "check:namespace": "python3 scripts/check_namespace.py --paths .",
+    "check:secrets": "python3 scripts/check_secrets.py --paths .",
     "deploy:solslot-v2": "hardhat run scripts/deploy-solslot-v2.js"
   },
   "devDependencies": {
