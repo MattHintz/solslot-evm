@@ -68,6 +68,8 @@ contract SolslotZkPassportVerifierAdapter is ISolslotZkPassportVerifierAdapter {
     error AgePolicyMismatch(uint8 expectedMinimumAge);
     error ProofTimestampOverflow(uint256 value);
     error NullifierTypeOverflow(uint256 value);
+    error UnsupportedNullifierType(uint256 value);
+    error MockNullifierTypeDisabled(uint256 value);
     error NullifierMismatch(bytes32 verifierValue, bytes32 publicInputValue);
 
     constructor(string memory domain_, bool devMode_) {
@@ -117,6 +119,12 @@ contract SolslotZkPassportVerifierAdapter is ISolslotZkPassportVerifierAdapter {
         uint256 nullifierType = uint256(publicInputs[publicInputs.length - 3]);
         if (nullifierType > type(uint16).max) {
             revert NullifierTypeOverflow(nullifierType);
+        }
+        // @zkpassport/utils NullifierType is exactly 0..3. Values 2 and 3
+        // are mock modes and are valid only for the explicit Alpha dev policy.
+        if (nullifierType > 3) revert UnsupportedNullifierType(nullifierType);
+        if (!devMode && nullifierType > 1) {
+            revert MockNullifierTypeDisabled(nullifierType);
         }
         bytes32 publicInputNullifier = publicInputs[publicInputs.length - 2];
         if (uniqueIdentifier == bytes32(0) || uniqueIdentifier != publicInputNullifier) {

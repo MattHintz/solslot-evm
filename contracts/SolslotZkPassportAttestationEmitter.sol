@@ -33,6 +33,7 @@ contract SolslotZkPassportAttestationEmitter is ERC2771Context {
 
     ISolslotZkPassportVerifierAdapter public immutable verifier;
     bytes32 public immutable bridgePolicyHash;
+    address public immutable trustedDirectRelayer;
 
     mapping(bytes32 nullifierKey => bool consumed) public consumedNullifiers;
     mapping(bytes32 bridgeCoinId => bool consumed) public consumedBridgeCoins;
@@ -61,20 +62,31 @@ contract SolslotZkPassportAttestationEmitter is ERC2771Context {
     error ZeroTimestamp();
     error StaleProofTimestamp(uint64 proofTimestamp, uint256 currentTimestamp);
     error FutureProofTimestamp(uint64 proofTimestamp, uint256 currentTimestamp);
+    error UntrustedEmitterCaller(address caller);
     error NullifierAlreadyConsumed(bytes32 key);
     error BridgeCoinAlreadyConsumed(bytes32 bridgeCoinId);
 
-    constructor(address verifier_, bytes32 bridgePolicyHash_, address trustedForwarder_)
+    constructor(
+        address verifier_,
+        bytes32 bridgePolicyHash_,
+        address trustedForwarder_,
+        address trustedDirectRelayer_
+    )
         ERC2771Context(trustedForwarder_)
     {
         if (verifier_ == address(0)) revert ZeroAddress("verifier");
         if (trustedForwarder_ == address(0)) revert ZeroAddress("trustedForwarder");
+        if (trustedDirectRelayer_ == address(0)) revert ZeroAddress("trustedDirectRelayer");
         if (bridgePolicyHash_ == bytes32(0)) revert ZeroBytes32("bridgePolicyHash");
         verifier = ISolslotZkPassportVerifierAdapter(verifier_);
         bridgePolicyHash = bridgePolicyHash_;
+        trustedDirectRelayer = trustedDirectRelayer_;
     }
 
     function verifyAndEmit(EnrollmentBinding calldata binding, bytes calldata proof) external {
+        if (!isTrustedForwarder(msg.sender) && msg.sender != trustedDirectRelayer) {
+            revert UntrustedEmitterCaller(msg.sender);
+        }
         _validateBinding(binding);
         ISolslotZkPassportVerifierAdapter.VerifiedProofFields memory fields =
             verifier.verifyVaultProof(proof, expectedVaultSubscope(binding.vaultLauncherId));

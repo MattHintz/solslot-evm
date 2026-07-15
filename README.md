@@ -46,5 +46,11 @@ Deploy only after the protocol commit and bridge policy are frozen:
 npm run deploy:solslot-v2 -- --network ethSepolia
 ```
 
+The deploy command requires the frozen protocol/EVM SHAs, dedicated BLS
+relayer address, at least 12 confirmations, and a new evidence output path. It
+refuses to overwrite an existing artifact. The output binds all three
+deployment receipts and runtime bytecode hashes, including the pinned
+zkPassport root verifier, into one SHA256 artifact.
+
 All runtime configuration uses `SOLSLOT_*` names. Mainnet deployment remains
 disabled by the launch process until the production ceremony is approved.

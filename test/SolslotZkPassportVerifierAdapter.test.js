@@ -30,13 +30,13 @@ function encodedProof({ timestamp = 1_800_000_000n, nullifierType = 1n, nullifie
 }
 
 describe('SolslotZkPassportVerifierAdapter', () => {
-  async function deployFixture() {
+  async function deployFixture(devMode = true) {
     const Root = await ethers.getContractFactory('MockSolslotZkPassportRootVerifier');
     const root = await Root.deploy();
     const Helper = await ethers.getContractFactory('MockSolslotZkPassportVerifierHelper');
     const helper = await Helper.deploy();
     const Adapter = await ethers.getContractFactory('TestableSolslotZkPassportVerifierAdapter');
-    const adapter = await Adapter.deploy('staging.solslot.com', true, await root.getAddress());
+    const adapter = await Adapter.deploy('staging.solslot.com', devMode, await root.getAddress());
     const proof = encodedProof();
     await helper.configure(true, true, 1_800_000_000n);
     await root.configure(true, b32(42), await helper.getAddress());
@@ -87,5 +87,23 @@ describe('SolslotZkPassportVerifierAdapter', () => {
     await expect(adapter.verifyVaultProof(proof.encoded, 'vault:0x01'))
       .to.be.revertedWithCustomError(adapter, 'NullifierTypeOverflow')
       .withArgs(65_536);
+  });
+
+  it('rejects nullifier modes outside the official zkPassport enum', async () => {
+    const { root, helper, adapter } = await deployFixture();
+    const proof = encodedProof({ nullifierType: 4n });
+    await root.configure(true, b32(42), await helper.getAddress());
+    await expect(adapter.verifyVaultProof(proof.encoded, 'vault:0x01'))
+      .to.be.revertedWithCustomError(adapter, 'UnsupportedNullifierType')
+      .withArgs(4);
+  });
+
+  it('rejects mock nullifier modes outside the explicit Alpha dev policy', async () => {
+    const { root, helper, adapter } = await deployFixture(false);
+    const proof = encodedProof({ nullifierType: 3n });
+    await root.configure(true, b32(42), await helper.getAddress());
+    await expect(adapter.verifyVaultProof(proof.encoded, 'vault:0x01'))
+      .to.be.revertedWithCustomError(adapter, 'MockNullifierTypeDisabled')
+      .withArgs(3);
   });
 });

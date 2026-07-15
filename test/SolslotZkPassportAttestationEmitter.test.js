@@ -32,7 +32,7 @@ function proofFields(timestamp, overrides = {}) {
 
 describe('SolslotZkPassportAttestationEmitter', () => {
   async function deployFixture() {
-    const [sender, forwarder] = await ethers.getSigners();
+    const [sender, forwarder, outsider] = await ethers.getSigners();
     const MockVerifier = await ethers.getContractFactory('MockSolslotZkPassportVerifierAdapter');
     const verifier = await MockVerifier.deploy();
     const Emitter = await ethers.getContractFactory('SolslotZkPassportAttestationEmitter');
@@ -40,11 +40,12 @@ describe('SolslotZkPassportAttestationEmitter', () => {
       await verifier.getAddress(),
       BRIDGE_POLICY_HASH,
       forwarder.address,
+      sender.address,
     );
     const timestamp = await time.latest();
     const fields = proofFields(timestamp);
     await verifier.setFields(fields);
-    return { sender, forwarder, verifier, emitter, timestamp, fields };
+    return { sender, forwarder, outsider, verifier, emitter, timestamp, fields };
   }
 
   it('derives every Chia commitment from verifier-returned public inputs', async () => {
@@ -154,6 +155,13 @@ describe('SolslotZkPassportAttestationEmitter', () => {
       .withArgs('bridgeAmount');
   });
 
+  it('rejects direct callers other than the dedicated BLS relayer', async () => {
+    const { outsider, emitter } = await deployFixture();
+    await expect(emitter.connect(outsider).verifyAndEmit(binding(), PROOF))
+      .to.be.revertedWithCustomError(emitter, 'UntrustedEmitterCaller')
+      .withArgs(outsider.address);
+  });
+
   it('executes a proof through the V2-only forwarder domain', async () => {
     const [owner, relayer] = await ethers.getSigners();
     const Forwarder = await ethers.getContractFactory('SolslotForwarder');
@@ -165,6 +173,7 @@ describe('SolslotZkPassportAttestationEmitter', () => {
       await verifier.getAddress(),
       BRIDGE_POLICY_HASH,
       await forwarder.getAddress(),
+      relayer.address,
     );
     const timestamp = await time.latest();
     await verifier.setFields(proofFields(timestamp));

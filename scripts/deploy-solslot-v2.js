@@ -1,6 +1,8 @@
 /** Deploy a fresh Solslot v2 forwarder, verifier adapter, and emitter. */
 'use strict';
 
+const fs = require('node:fs');
+const path = require('node:path');
 const { ethers, network } = require('hardhat');
 
 function required(name) {
@@ -9,14 +11,59 @@ function required(name) {
   return value;
 }
 
+function requiredSha(name) {
+  const value = required(name).toLowerCase();
+  if (!/^[0-9a-f]{40}$/.test(value)) {
+    throw new Error(`${name} must be a full 40-character Git commit SHA`);
+  }
+  return value;
+}
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+async function runtimeCodeHash(address) {
+  const code = await ethers.provider.getCode(address);
+  if (code === '0x') throw new Error(`No runtime bytecode at ${address}`);
+  return ethers.keccak256(code);
+}
+
 async function main() {
   const [deployer] = await ethers.getSigners();
   const bridgePolicyHash = required('SOLSLOT_ZKPASSPORT_BRIDGE_POLICY_HASH');
   const domain = required('SOLSLOT_ZKPASSPORT_DOMAIN');
+  const directRelayerAddress = required('SOLSLOT_ZKPASSPORT_BLS_RELAYER_ADDRESS');
+  const evmSourceSha = requiredSha('SOLSLOT_EVM_SOURCE_SHA');
+  const protocolSourceSha = requiredSha('SOLSLOT_PROTOCOL_SOURCE_SHA');
+  const outputPath = path.resolve(required('SOLSLOT_EVM_DEPLOYMENT_OUTPUT'));
   const devMode = process.env.SOLSLOT_ZKPASSPORT_DEV_MODE === 'true';
+  const confirmations = network.name === 'hardhat'
+    ? 1
+    : Number(process.env.SOLSLOT_EVM_CONFIRMATIONS || 12);
 
   if (!ethers.isHexString(bridgePolicyHash, 32) || bridgePolicyHash === ethers.ZeroHash) {
     throw new Error('SOLSLOT_ZKPASSPORT_BRIDGE_POLICY_HASH must be a non-zero bytes32');
+  }
+  if (!ethers.isAddress(directRelayerAddress) || directRelayerAddress === ethers.ZeroAddress) {
+    throw new Error('SOLSLOT_ZKPASSPORT_BLS_RELAYER_ADDRESS must be a non-zero address');
+  }
+  if (
+    !Number.isSafeInteger(confirmations) ||
+    confirmations < 1 ||
+    (network.name !== 'hardhat' && confirmations < 12)
+  ) {
+    throw new Error('SOLSLOT_EVM_CONFIRMATIONS must be at least 12 outside Hardhat');
+  }
+  if (fs.existsSync(outputPath)) {
+    throw new Error(`Refusing to overwrite existing deployment evidence: ${outputPath}`);
   }
   if (network.name !== 'hardhat' && !process.env.SOLSLOT_DEPLOYER_PRIVATE_KEY) {
     throw new Error(
@@ -30,10 +77,12 @@ async function main() {
   const Forwarder = await ethers.getContractFactory('SolslotForwarder');
   const forwarder = await Forwarder.deploy();
   await forwarder.waitForDeployment();
+  const forwarderReceipt = await forwarder.deploymentTransaction().wait(confirmations);
 
   const Adapter = await ethers.getContractFactory('SolslotZkPassportVerifierAdapter');
   const adapter = await Adapter.deploy(domain, devMode);
   await adapter.waitForDeployment();
+  const adapterReceipt = await adapter.deploymentTransaction().wait(confirmations);
   const rootVerifierAddress = await adapter.ZKPASSPORT_ROOT_VERIFIER();
   if (network.name !== 'hardhat' && (await ethers.provider.getCode(rootVerifierAddress)) === '0x') {
     throw new Error(`zkPassport root verifier is not deployed at ${rootVerifierAddress}`);
@@ -44,9 +93,14 @@ async function main() {
     await adapter.getAddress(),
     bridgePolicyHash,
     await forwarder.getAddress(),
+    directRelayerAddress,
   );
   await emitter.waitForDeployment();
-  const receipt = await emitter.deploymentTransaction().wait();
+  const emitterReceipt = await emitter.deploymentTransaction().wait(confirmations);
+
+  const forwarderAddress = await forwarder.getAddress();
+  const adapterAddress = await adapter.getAddress();
+  const emitterAddress = await emitter.getAddress();
 
   const deployment = {
     schemaVersion: 2,
@@ -54,18 +108,54 @@ async function main() {
     credentialPolicyVersion: Number(await emitter.POLICY_VERSION()),
     network: network.name,
     chainId: Number((await ethers.provider.getNetwork()).chainId),
+    confirmations,
+    createdAt: new Date().toISOString(),
+    sourceShas: {
+      evm: evmSourceSha,
+      protocol: protocolSourceSha,
+    },
     deployer: deployer.address,
-    forwarderAddress: await forwarder.getAddress(),
-    verifierAdapterAddress: await adapter.getAddress(),
-    attestationEmitterAddress: await emitter.getAddress(),
+    forwarderAddress,
+    verifierAdapterAddress: adapterAddress,
+    attestationEmitterAddress: emitterAddress,
+    trustedDirectRelayerAddress: directRelayerAddress,
     bridgePolicyHash,
     zkPassportRootVerifierAddress: rootVerifierAddress,
     zkPassportDomain: domain,
     zkPassportDevMode: devMode,
-    deploymentTxHash: receipt.hash,
-    deploymentBlock: receipt.blockNumber,
+    deploymentTransactions: {
+      forwarder: {
+        hash: forwarderReceipt.hash,
+        blockNumber: forwarderReceipt.blockNumber,
+      },
+      verifierAdapter: {
+        hash: adapterReceipt.hash,
+        blockNumber: adapterReceipt.blockNumber,
+      },
+      attestationEmitter: {
+        hash: emitterReceipt.hash,
+        blockNumber: emitterReceipt.blockNumber,
+      },
+    },
+    runtimeCodeHashes: {
+      forwarder: await runtimeCodeHash(forwarderAddress),
+      verifierAdapter: await runtimeCodeHash(adapterAddress),
+      attestationEmitter: await runtimeCodeHash(emitterAddress),
+      zkPassportRootVerifier: await runtimeCodeHash(rootVerifierAddress),
+    },
   };
-  console.log(JSON.stringify(deployment, null, 2));
+  const artifact = {
+    ...deployment,
+    artifactHash: ethers.sha256(ethers.toUtf8Bytes(stableJson(deployment))),
+  };
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(outputPath, `${JSON.stringify(artifact, null, 2)}\n`, {
+    encoding: 'utf8',
+    flag: 'wx',
+    mode: 0o600,
+  });
+  console.log(JSON.stringify(artifact, null, 2));
+  console.error(`Wrote non-overwritable Solslot V2 EVM evidence to ${outputPath}`);
 }
 
 main().catch((error) => {

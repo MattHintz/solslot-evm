@@ -5,6 +5,7 @@ artifacts/
 cache/
 coverage/
 typechain-types/
+deployment-artifacts/
 .env
 .env.*
 !.env.example
