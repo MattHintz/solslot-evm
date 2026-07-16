@@ -27,6 +27,10 @@ describe('Solslot V2 deployment tooling', () => {
     expect(wrapper).to.include('exec 3<"$passphrase_file"');
     expect(wrapper).to.include('rm -f -- "$passphrase_file"');
     expect(wrapper).not.to.include('<<<"$passphrase"');
+    expect(wrapper).to.include(
+      'HARDHAT_NETWORK=ethSepolia node scripts/deploy-solslot-v2.js',
+    );
+    expect(wrapper).not.to.include('hardhat run scripts/deploy-solslot-v2.js');
     expect(`${deployment}\n${config}`).not.to.include('SOLSLOT_DEPLOYER_PRIVATE_KEY');
   });
 
@@ -44,13 +48,13 @@ describe('Solslot V2 deployment tooling', () => {
           'exec 3<"$file"',
           'rm -f -- "$file"',
           'unset phrase',
-          `node -e "const fs=require('node:fs'); process.stdout.write(fs.readFileSync(3, 'utf8'))"`,
+          `HARDHAT_NETWORK=hardhat node -e "const fs=require('node:fs'); const {network}=require('hardhat'); process.stdout.write(network.name + ':' + fs.readFileSync(3, 'utf8'))"`,
         ].join('\n'),
       ],
       { encoding: 'utf8' },
     );
 
     expect(result.status, result.stderr).to.equal(0);
-    expect(result.stdout).to.equal('descriptor-test-value');
+    expect(result.stdout).to.match(/hardhat:descriptor-test-value$/);
   });
 });

@@ -56,4 +56,4 @@ export SOLSLOT_KEYSTORE_PASSPHRASE_FD=3
 export SOLSLOT_EVM_CONFIRMATIONS="${SOLSLOT_EVM_CONFIRMATIONS:-12}"
 
 cd "$repo_dir"
-./node_modules/.bin/hardhat run scripts/deploy-solslot-v2.js --network ethSepolia
+HARDHAT_NETWORK=ethSepolia node scripts/deploy-solslot-v2.js
