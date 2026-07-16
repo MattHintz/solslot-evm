@@ -36,8 +36,46 @@ async function runtimeCodeHash(address) {
   return ethers.keccak256(code);
 }
 
+async function deploymentSigner() {
+  if (network.name === 'hardhat') {
+    const [signer] = await ethers.getSigners();
+    return signer;
+  }
+
+  const keystorePath = path.resolve(required('SOLSLOT_DEPLOYER_KEYSTORE_PATH'));
+  const descriptor = Number(required('SOLSLOT_KEYSTORE_PASSPHRASE_FD'));
+  if (!Number.isInteger(descriptor) || descriptor < 3) {
+    throw new Error('SOLSLOT_KEYSTORE_PASSPHRASE_FD must name a dedicated file descriptor');
+  }
+  const stat = fs.lstatSync(keystorePath);
+  if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o077) !== 0) {
+    throw new Error('EVM operator keystore must be a regular owner-only file');
+  }
+
+  const passphraseBytes = fs.readFileSync(descriptor);
+  let wallet;
+  try {
+    const passphrase = passphraseBytes.toString('utf8').replace(/[\r\n]+$/, '');
+    wallet = await ethers.Wallet.fromEncryptedJson(
+      fs.readFileSync(keystorePath, 'utf8'),
+      passphrase,
+    );
+  } finally {
+    passphraseBytes.fill(0);
+  }
+  const expectedAddress = String(process.env.SOLSLOT_EVM_OPERATOR_ADDRESS || '').trim();
+  if (
+    expectedAddress &&
+    (!ethers.isAddress(expectedAddress) ||
+      wallet.address.toLowerCase() !== expectedAddress.toLowerCase())
+  ) {
+    throw new Error('Encrypted keystore address does not match SOLSLOT_EVM_OPERATOR_ADDRESS');
+  }
+  return wallet.connect(ethers.provider);
+}
+
 async function main() {
-  const [deployer] = await ethers.getSigners();
+  const deployer = await deploymentSigner();
   const bridgePolicyHash = required('SOLSLOT_ZKPASSPORT_BRIDGE_POLICY_HASH');
   const domain = required('SOLSLOT_ZKPASSPORT_DOMAIN');
   const directRelayerAddress = required('SOLSLOT_ZKPASSPORT_BLS_RELAYER_ADDRESS');
@@ -65,21 +103,19 @@ async function main() {
   if (fs.existsSync(outputPath)) {
     throw new Error(`Refusing to overwrite existing deployment evidence: ${outputPath}`);
   }
-  if (network.name !== 'hardhat' && !process.env.SOLSLOT_DEPLOYER_PRIVATE_KEY) {
-    throw new Error(
-      'SOLSLOT_DEPLOYER_PRIVATE_KEY is required outside the local Hardhat network',
-    );
-  }
   if (network.name === 'baseMainnet' || network.name === 'ethMainnet') {
     throw new Error('Solslot V2 mainnet deployment is disabled during Alpha remediation');
   }
 
-  const Forwarder = await ethers.getContractFactory('SolslotForwarder');
+  const Forwarder = await ethers.getContractFactory('SolslotForwarder', deployer);
   const forwarder = await Forwarder.deploy();
   await forwarder.waitForDeployment();
   const forwarderReceipt = await forwarder.deploymentTransaction().wait(confirmations);
 
-  const Adapter = await ethers.getContractFactory('SolslotZkPassportVerifierAdapter');
+  const Adapter = await ethers.getContractFactory(
+    'SolslotZkPassportVerifierAdapter',
+    deployer,
+  );
   const adapter = await Adapter.deploy(domain, devMode);
   await adapter.waitForDeployment();
   const adapterReceipt = await adapter.deploymentTransaction().wait(confirmations);
@@ -88,7 +124,10 @@ async function main() {
     throw new Error(`zkPassport root verifier is not deployed at ${rootVerifierAddress}`);
   }
 
-  const Emitter = await ethers.getContractFactory('SolslotZkPassportAttestationEmitter');
+  const Emitter = await ethers.getContractFactory(
+    'SolslotZkPassportAttestationEmitter',
+    deployer,
+  );
   const emitter = await Emitter.deploy(
     await adapter.getAddress(),
     bridgePolicyHash,

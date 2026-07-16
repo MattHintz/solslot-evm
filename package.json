@@ -8,7 +8,8 @@
     "test": "hardhat test",
     "check:namespace": "python3 scripts/check_namespace.py --paths .",
     "check:secrets": "python3 scripts/check_secrets.py --paths .",
-    "deploy:solslot-v2": "hardhat run scripts/deploy-solslot-v2.js"
+    "deploy:solslot-v2": "hardhat run scripts/deploy-solslot-v2.js",
+    "deploy:solslot-v2:keystore": "bash scripts/deploy-solslot-v2-from-keystore.sh"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^5.0.0",
