@@ -31,9 +31,25 @@ done
 
 read -r -s -p 'EVM operator keystore passphrase: ' passphrase
 printf '\n' >&2
-exec 3<<<"$passphrase"
+
+# Hardhat can mark inherited pipe descriptors nonblocking, which makes a
+# here-string race with Node's synchronous descriptor read. Keep the phrase in
+# an owner-only tmpfs inode, open it, and unlink it before Hardhat starts. The
+# descriptor remains readable but no plaintext path survives the handoff.
+passphrase_file="$(mktemp /dev/shm/solslot-keystore-passphrase.XXXXXX)"
+cleanup_passphrase() {
+  exec 3<&- 2>/dev/null || true
+  if [[ -n "${passphrase_file:-}" ]]; then
+    rm -f -- "$passphrase_file"
+  fi
+  unset passphrase
+}
+trap cleanup_passphrase EXIT HUP INT TERM
+printf '%s' "$passphrase" > "$passphrase_file"
+exec 3<"$passphrase_file"
+rm -f -- "$passphrase_file"
+passphrase_file=""
 unset passphrase
-trap 'exec 3<&-' EXIT
 
 export SOLSLOT_DEPLOYER_KEYSTORE_PATH="$keystore"
 export SOLSLOT_KEYSTORE_PASSPHRASE_FD=3

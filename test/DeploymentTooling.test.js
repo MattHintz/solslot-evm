@@ -1,6 +1,7 @@
 'use strict';
 
 const { expect } = require('chai');
+const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -20,7 +21,36 @@ describe('Solslot V2 deployment tooling', () => {
 
     expect(deployment).to.include('Wallet.fromEncryptedJson');
     expect(deployment).to.include('SOLSLOT_KEYSTORE_PASSPHRASE_FD');
-    expect(wrapper).to.include('exec 3<<<"$passphrase"');
+    expect(wrapper).to.include(
+      'mktemp /dev/shm/solslot-keystore-passphrase.XXXXXX',
+    );
+    expect(wrapper).to.include('exec 3<"$passphrase_file"');
+    expect(wrapper).to.include('rm -f -- "$passphrase_file"');
+    expect(wrapper).not.to.include('<<<"$passphrase"');
     expect(`${deployment}\n${config}`).not.to.include('SOLSLOT_DEPLOYER_PRIVATE_KEY');
+  });
+
+  it('keeps the passphrase descriptor readable after unlinking tmpfs storage', () => {
+    const result = spawnSync(
+      'bash',
+      [
+        '-c',
+        [
+          'set -euo pipefail',
+          'umask 077',
+          'phrase="descriptor-test-value"',
+          'file="$(mktemp /dev/shm/solslot-keystore-passphrase.XXXXXX)"',
+          'printf %s "$phrase" > "$file"',
+          'exec 3<"$file"',
+          'rm -f -- "$file"',
+          'unset phrase',
+          `node -e "const fs=require('node:fs'); process.stdout.write(fs.readFileSync(3, 'utf8'))"`,
+        ].join('\n'),
+      ],
+      { encoding: 'utf8' },
+    );
+
+    expect(result.status, result.stderr).to.equal(0);
+    expect(result.stdout).to.equal('descriptor-test-value');
   });
 });
