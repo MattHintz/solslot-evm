@@ -1,7 +1,9 @@
-const { expect } = require('chai');
-const { ethers } = require('hardhat');
-const { time } = require('@nomicfoundation/hardhat-network-helpers');
-const { anyValue } = require('@nomicfoundation/hardhat-chai-matchers/withArgs');
+import { anyValue } from '@nomicfoundation/hardhat-ethers-chai-matchers/withArgs';
+import { expect } from 'chai';
+import { network } from 'hardhat';
+
+const { ethers, networkHelpers } = await network.create();
+const { time } = networkHelpers;
 
 const BRIDGE_POLICY_HASH = `0x${'55'.repeat(32)}`;
 const PROOF = '0x123456';
@@ -105,7 +107,7 @@ describe('SolslotZkPassportAttestationEmitter', () => {
     const { verifier, emitter } = await deployFixture();
     const enrolled = binding();
     await verifier.setRequiredSubscope(`vault:${enrolled.vaultLauncherId}`);
-    await expect(emitter.verifyAndEmit(enrolled, PROOF)).not.to.be.reverted;
+    await expect(emitter.verifyAndEmit(enrolled, PROOF)).not.to.revert(ethers);
   });
 
   it('rejects replay of the same vault-scoped nullifier', async () => {
@@ -129,7 +131,7 @@ describe('SolslotZkPassportAttestationEmitter', () => {
     const { emitter } = await deployFixture();
     await emitter.verifyAndEmit(binding(), PROOF);
     const second = binding({ vaultLauncherId: b32('77'), bridgeParentId: b32('88') });
-    await expect(emitter.verifyAndEmit(second, PROOF)).not.to.be.reverted;
+    await expect(emitter.verifyAndEmit(second, PROOF)).not.to.revert(ethers);
   });
 
   it('rejects stale or future proof timestamps returned by the verifier', async () => {

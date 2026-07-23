@@ -1,9 +1,11 @@
 /** Deploy a fresh Solslot v2 forwarder, verifier adapter, and emitter. */
-'use strict';
 
-const fs = require('node:fs');
-const path = require('node:path');
-const { ethers, network } = require('hardhat');
+import fs from 'node:fs';
+import path from 'node:path';
+import { network } from 'hardhat';
+
+const connection = await network.create();
+const { ethers, networkName } = connection;
 
 function required(name) {
   const value = String(process.env[name] || '').trim();
@@ -37,7 +39,7 @@ async function runtimeCodeHash(address) {
 }
 
 async function deploymentSigner() {
-  if (network.name === 'hardhat') {
+  if (networkName === 'hardhat') {
     const [signer] = await ethers.getSigners();
     return signer;
   }
@@ -83,7 +85,7 @@ async function main() {
   const protocolSourceSha = requiredSha('SOLSLOT_PROTOCOL_SOURCE_SHA');
   const outputPath = path.resolve(required('SOLSLOT_EVM_DEPLOYMENT_OUTPUT'));
   const devMode = process.env.SOLSLOT_ZKPASSPORT_DEV_MODE === 'true';
-  const confirmations = network.name === 'hardhat'
+  const confirmations = networkName === 'hardhat'
     ? 1
     : Number(process.env.SOLSLOT_EVM_CONFIRMATIONS || 12);
 
@@ -96,14 +98,14 @@ async function main() {
   if (
     !Number.isSafeInteger(confirmations) ||
     confirmations < 1 ||
-    (network.name !== 'hardhat' && confirmations < 12)
+    (networkName !== 'hardhat' && confirmations < 12)
   ) {
     throw new Error('SOLSLOT_EVM_CONFIRMATIONS must be at least 12 outside Hardhat');
   }
   if (fs.existsSync(outputPath)) {
     throw new Error(`Refusing to overwrite existing deployment evidence: ${outputPath}`);
   }
-  if (network.name === 'baseMainnet' || network.name === 'ethMainnet') {
+  if (networkName === 'baseMainnet' || networkName === 'ethMainnet') {
     throw new Error('Solslot V2 mainnet deployment is disabled during Alpha remediation');
   }
 
@@ -120,7 +122,7 @@ async function main() {
   await adapter.waitForDeployment();
   const adapterReceipt = await adapter.deploymentTransaction().wait(confirmations);
   const rootVerifierAddress = await adapter.ZKPASSPORT_ROOT_VERIFIER();
-  if (network.name !== 'hardhat' && (await ethers.provider.getCode(rootVerifierAddress)) === '0x') {
+  if (networkName !== 'hardhat' && (await ethers.provider.getCode(rootVerifierAddress)) === '0x') {
     throw new Error(`zkPassport root verifier is not deployed at ${rootVerifierAddress}`);
   }
 
@@ -140,12 +142,14 @@ async function main() {
   const forwarderAddress = await forwarder.getAddress();
   const adapterAddress = await adapter.getAddress();
   const emitterAddress = await emitter.getAddress();
+  const rootVerifierRuntimeCodeHash =
+    networkName === 'hardhat' ? null : await runtimeCodeHash(rootVerifierAddress);
 
   const deployment = {
     schemaVersion: 2,
     protocolVersion: 'solslot-v2',
     credentialPolicyVersion: Number(await emitter.POLICY_VERSION()),
-    network: network.name,
+    network: networkName,
     chainId: Number((await ethers.provider.getNetwork()).chainId),
     confirmations,
     createdAt: new Date().toISOString(),
@@ -180,7 +184,7 @@ async function main() {
       forwarder: await runtimeCodeHash(forwarderAddress),
       verifierAdapter: await runtimeCodeHash(adapterAddress),
       attestationEmitter: await runtimeCodeHash(emitterAddress),
-      zkPassportRootVerifier: await runtimeCodeHash(rootVerifierAddress),
+      zkPassportRootVerifier: rootVerifierRuntimeCodeHash,
     },
   };
   const artifact = {
