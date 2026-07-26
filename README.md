@@ -34,9 +34,15 @@ an explicit adapter review and a fresh deployment.
 
 ## Commands
 
+Hardhat 3 requires Node.js 22.10 or newer. The project uses only the explicit
+Ethers, Mocha, matcher, and network-helper plugins needed by this repository.
+
 ```bash
 npm ci
+npm audit --audit-level=high
 npm run check:namespace
+npm run check:secrets
+npm run compile
 npm test
 ```
 

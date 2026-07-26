@@ -1,9 +1,10 @@
-'use strict';
+import { expect } from 'chai';
+import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const { expect } = require('chai');
-const { spawnSync } = require('node:child_process');
-const fs = require('node:fs');
-const path = require('node:path');
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 describe('Solslot V2 deployment tooling', () => {
   const root = path.resolve(__dirname, '..');
@@ -21,6 +22,9 @@ describe('Solslot V2 deployment tooling', () => {
 
     expect(deployment).to.include('Wallet.fromEncryptedJson');
     expect(deployment).to.include('SOLSLOT_KEYSTORE_PASSPHRASE_FD');
+    expect(deployment).to.include(
+      "networkName === 'hardhat' ? null : await runtimeCodeHash(rootVerifierAddress)",
+    );
     expect(wrapper).to.include(
       'mktemp /dev/shm/solslot-keystore-passphrase.XXXXXX',
     );
@@ -48,7 +52,7 @@ describe('Solslot V2 deployment tooling', () => {
           'exec 3<"$file"',
           'rm -f -- "$file"',
           'unset phrase',
-          `HARDHAT_NETWORK=hardhat node -e "const fs=require('node:fs'); const {network}=require('hardhat'); process.stdout.write(network.name + ':' + fs.readFileSync(3, 'utf8'))"`,
+          `HARDHAT_NETWORK=hardhat node --input-type=module -e "import fs from 'node:fs'; import { network } from 'hardhat'; const connection = await network.create(); process.stdout.write(connection.networkName + ':' + fs.readFileSync(3, 'utf8'))"`,
         ].join('\n'),
       ],
       { encoding: 'utf8' },
