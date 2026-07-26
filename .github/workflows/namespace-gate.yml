@@ -14,7 +14,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm audit --audit-level=high
+      - name: Audit shipped dependencies
+        run: npm audit --omit=dev --audit-level=high
       - run: python3 scripts/check_namespace.py
       - run: python3 scripts/check_secrets.py
       - run: npm run compile
