@@ -30,6 +30,11 @@ export default defineConfig({
       type: 'edr-simulated',
       chainType: 'l1',
     },
+    selectedLocal: {
+      type: 'edr-simulated',
+      chainType: 'l1',
+      chainId: 84532,
+    },
     baseSepolia: {
       type: 'http',
       chainType: 'op',
