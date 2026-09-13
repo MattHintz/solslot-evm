@@ -32,7 +32,7 @@ describe('Solslot V2 deployment tooling', () => {
     expect(wrapper).to.include('rm -f -- "$passphrase_file"');
     expect(wrapper).not.to.include('<<<"$passphrase"');
     expect(wrapper).to.include(
-      'HARDHAT_NETWORK=ethSepolia node scripts/deploy-solslot-v2.js',
+      'HARDHAT_NETWORK="$deployment_network" node scripts/deploy-solslot-v2.js',
     );
     expect(wrapper).not.to.include('hardhat run scripts/deploy-solslot-v2.js');
     expect(`${deployment}\n${config}`).not.to.include('SOLSLOT_DEPLOYER_PRIVATE_KEY');

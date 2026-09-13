@@ -15,19 +15,21 @@ permissions="$(stat -c '%a' "$keystore")"
   exit 1
 }
 
-for name in \
-  SOLSLOT_ETH_SEPOLIA_RPC_URL \
-  SOLSLOT_EVM_SOURCE_SHA \
-  SOLSLOT_PROTOCOL_SOURCE_SHA \
-  SOLSLOT_EVM_DEPLOYMENT_OUTPUT \
-  SOLSLOT_ZKPASSPORT_BRIDGE_POLICY_HASH \
-  SOLSLOT_ZKPASSPORT_BLS_RELAYER_ADDRESS \
-  SOLSLOT_ZKPASSPORT_DOMAIN; do
-  [[ -n "${!name:-}" ]] || {
-    printf '%s is required\n' "$name" >&2
-    exit 1
-  }
+deployment_network=ethSepolia
+if [[ ${SOLSLOT_EVM_DEPLOYMENT_PLAN+x} ]]; then
+  deployment_network=baseSepolia
+  required_names=(SOLSLOT_BASE_SEPOLIA_RPC_URL SOLSLOT_EVM_DEPLOYMENT_PLAN SOLSLOT_EVM_PLAN_SHA256 SOLSLOT_ACTION_ENVELOPE_ID SOLSLOT_EVM_DEPLOYMENT_JOURNAL)
+  [[ "${SOLSLOT_EVM_DEPLOYMENT_EXECUTE:-}" == approved ]] || { printf 'Explicit approved execution is required after plan review. Use the Node runner for public preview.\n' >&2; exit 1; }
+else
+  required_names=(SOLSLOT_ETH_SEPOLIA_RPC_URL SOLSLOT_EVM_SOURCE_SHA SOLSLOT_PROTOCOL_SOURCE_SHA SOLSLOT_EVM_DEPLOYMENT_OUTPUT SOLSLOT_ZKPASSPORT_BRIDGE_POLICY_HASH SOLSLOT_ZKPASSPORT_BLS_RELAYER_ADDRESS SOLSLOT_ZKPASSPORT_DOMAIN)
+fi
+for name in "${required_names[@]}"; do
+  [[ -n "${!name:-}" ]] || { printf '%s is required\n' "$name" >&2; exit 1; }
 done
+# Public selected preflight runs before requesting the keystore passphrase.
+if [[ "$deployment_network" == baseSepolia ]]; then
+  (cd "$repo_dir" && SOLSLOT_EVM_DEPLOYMENT_EXECUTE=preview HARDHAT_NETWORK=baseSepolia node scripts/deploy-solslot-v2.js)
+fi
 
 read -r -s -p 'EVM operator keystore passphrase: ' passphrase
 printf '\n' >&2
@@ -56,4 +58,4 @@ export SOLSLOT_KEYSTORE_PASSPHRASE_FD=3
 export SOLSLOT_EVM_CONFIRMATIONS="${SOLSLOT_EVM_CONFIRMATIONS:-12}"
 
 cd "$repo_dir"
-HARDHAT_NETWORK=ethSepolia node scripts/deploy-solslot-v2.js
+HARDHAT_NETWORK="$deployment_network" node scripts/deploy-solslot-v2.js

@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { network } from 'hardhat';
+import { readCanonical, validatePlan, runSelectedDeployment } from './selected-deployment.js';
 
 const connection = await network.create();
 const { ethers, networkName } = connection;
@@ -77,6 +78,23 @@ async function deploymentSigner() {
 }
 
 async function main() {
+  // Presence (including empty/malformed values) selects the strict path.
+  // Validation and RPC identity precede any signer/key access.
+  if (Object.hasOwn(process.env, 'SOLSLOT_EVM_DEPLOYMENT_PLAN')) {
+    const plan = validatePlan(readCanonical(required('SOLSLOT_EVM_DEPLOYMENT_PLAN'), required('SOLSLOT_EVM_PLAN_SHA256')));
+    const execute = process.env.SOLSLOT_EVM_DEPLOYMENT_EXECUTE === 'approved';
+    if (execute && required('SOLSLOT_ACTION_ENVELOPE_ID') !== plan.actionEnvelopeId) throw new Error('ActionEnvelope differs from plan');
+    const result = await runSelectedDeployment({plan, provider: ethers.provider,
+      getFactory: name => ethers.getContractFactory(name), signerFactory: deploymentSigner,
+      journalDirectory: execute ? required('SOLSLOT_EVM_DEPLOYMENT_JOURNAL') : undefined,
+      execute, resubmit: process.env.SOLSLOT_EVM_RESUBMIT_ORIGINAL === 'true'});
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+  const chainId = (await ethers.provider.getNetwork()).chainId;
+  if (chainId !== 11155111n && !(networkName === 'hardhat' && chainId === 31337n)) {
+    throw new Error('Legacy deployment requires Ethereum Sepolia; Base Sepolia requires an exact selected plan');
+  }
   const deployer = await deploymentSigner();
   const bridgePolicyHash = required('SOLSLOT_ZKPASSPORT_BRIDGE_POLICY_HASH');
   const domain = required('SOLSLOT_ZKPASSPORT_DOMAIN');
@@ -202,6 +220,8 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(error);
+  if (Object.hasOwn(process.env, 'SOLSLOT_EVM_DEPLOYMENT_PLAN')) {
+    console.error('Selected deployment stopped. Preserve the plan and journal; reconcile public RPC evidence before retrying. No replacement is authorized.');
+  } else { console.error(error); }
   process.exitCode = 1;
 });
