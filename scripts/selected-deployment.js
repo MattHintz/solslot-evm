@@ -1,4 +1,4 @@
-/** Exact-plan Base Sepolia deployment. Public planning never accesses a key.
+/** Exact-plan Base identity deployment. Public planning never accesses a key.
  * A journal contains broadcastable authorizations, so keep it owner-only.
  * No timeout, missing receipt or fee change authorizes a replacement transaction.
  */
@@ -48,15 +48,26 @@ export function selectedPolicy(validators, context) {
   return listHashes([atom('0x02'),pair(atom('0x01'),BRIDGE_MODULE_HASH),curried]);
 }
 
+const IDENTITY_NETWORKS = Object.freeze({
+  baseSepolia: { chainId: 84532, clvmAtom: '0x014a34' },
+  base: { chainId: 8453, clvmAtom: '0x2105' },
+});
+function identityNetwork(plan) {
+  const selected = Object.hasOwn(IDENTITY_NETWORKS, plan.network) ? IDENTITY_NETWORKS[plan.network] : undefined;
+  requireThat(selected && selected.chainId === plan.chainId, 'identity network must be explicit Base/8453 or Base Sepolia/84532');
+  return selected;
+}
 export function selectedContext(plan) {
+  const selected = identityNetwork(plan);
   return list([ethers.toUtf8Bytes('solslot-enrollment-context-v1'),ethers.toUtf8Bytes(plan.environment),
-    ethers.toUtf8Bytes('testnet11'),'0x014a34',plan.attestationEmitterAddress,plan.permitIssuer,plan.deploymentId,plan.releaseIdentity]);
+    ethers.toUtf8Bytes('testnet11'),selected.clvmAtom,plan.attestationEmitterAddress,plan.permitIssuer,plan.deploymentId,plan.releaseIdentity]);
 }
 export function validatePlan(plan) {
   keys(plan, PLAN_FIELDS, 'deployment plan');
   const { planHash, ...unsigned } = plan;
   requireThat(planHash === hashObject(unsigned), 'deployment plan hash differs');
-  requireThat(plan.schema === 'solslot.selected-deployment-plan.v1' && plan.chainId === 84532 && plan.network === 'baseSepolia', 'only selected Base Sepolia is supported');
+  requireThat(plan.schema === 'solslot.selected-deployment-plan.v1', 'deployment plan schema differs');
+  identityNetwork(plan);
   requireThat(['staging-alpha','production-alpha'].includes(plan.environment) && plan.zkPassportDomain === (plan.environment === 'staging-alpha' ? 'staging.solslot.com' : 'solslot.com') && plan.zkPassportDevMode === false, 'deployment host or devMode differs');
   keys(plan.sourceShas, SOURCES, 'source revisions');
   requireThat(Object.values(plan.sourceShas).every(v => typeof v === 'string' && /^[0-9a-f]{40}$/.test(v) && v !== '0'.repeat(40)), 'nine nonzero Git revisions are required');
@@ -86,7 +97,7 @@ export async function deploymentRequests(plan, getFactory) {
     const factory=await getFactory(contract); const deploy=await factory.getDeployTransaction(...args[i]);
     const fixed=plan.transactions[name];
     requireThat(ethers.keccak256(deploy.data) === fixed.initCodeHash, `${name} compiled init code differs from reviewed plan`);
-    requests.push({type:2,chainId:84532n,nonce:fixed.nonce,to:null,value:0n,data:deploy.data,
+    requests.push({type:2,chainId:BigInt(plan.chainId),nonce:fixed.nonce,to:null,value:0n,data:deploy.data,
       gasLimit:BigInt(fixed.gasLimit),maxFeePerGas:BigInt(fixed.maxFeePerGas),maxPriorityFeePerGas:BigInt(fixed.maxPriorityFeePerGas),accessList:[]});
   }
   return requests;
@@ -129,7 +140,7 @@ function validateSigned(raw, request, deployer) {
   return tx.hash;
 }
 async function boundary(provider, plan) {
-  requireThat((await provider.getNetwork()).chainId === 84532n,'RPC is not Base Sepolia');
+  requireThat((await provider.getNetwork()).chainId === BigInt(plan.chainId),`RPC is not selected identity network ${plan.network}/${plan.chainId}`);
   const code=await provider.getCode(ROOT_VERIFIER);
   requireThat(code !== '0x' && ethers.keccak256(code) === plan.rootVerifierCodeHash,'root verifier code differs or is unavailable');
 }
@@ -144,7 +155,7 @@ async function observe(provider, plan, requests, hashes) {
       receipt.blockHash === block?.hash && tx.blockHash === receipt.blockHash && tx.blockNumber === receipt.blockNumber &&
       receipt.contractAddress?.toLowerCase() === plan[ADDRESS_FIELDS[i]],'deployment receipt failed or is noncanonical');
     requireThat(tx.from.toLowerCase() === plan.deployer && tx.nonce === requests[i].nonce && tx.to === null &&
-      tx.chainId === 84532n && tx.value === 0n && tx.data === requests[i].data,'mined deployment transaction differs');
+      tx.chainId === BigInt(plan.chainId) && tx.value === 0n && tx.data === requests[i].data,'mined deployment transaction differs');
     requireThat(receipt.blockNumber <= peak.number,'deployment receipt is beyond observed peak');
     receipts.push({...receipt,confirmations:peak.number-receipt.blockNumber+1});
   }
@@ -208,7 +219,7 @@ export async function runSelectedDeployment({plan,provider,getFactory,signerFact
   const root=await provider.getCode(ROOT_VERIFIER,state.peak.number);
   requireThat(ethers.keccak256(root) === plan.rootVerifierCodeHash,'root verifier changed at evidence snapshot');runtimeCodeHashes.zkPassportRootVerifier=plan.rootVerifierCodeHash;
   requireThat((await provider.getBlock(state.peak.number))?.hash === state.peak.hash,'chain reorganized during runtime observation');
-  const deployment={schemaVersion:3,protocolVersion:'solslot-v2',credentialPolicyVersion:2,network:'baseSepolia',chainId:84532,
+  const deployment={schemaVersion:3,protocolVersion:'solslot-v2',credentialPolicyVersion:2,network:plan.network,chainId:plan.chainId,
     sourceShas:plan.sourceShas,deployer:plan.deployer,startNonce:plan.startNonce,
     ...Object.fromEntries(ADDRESS_FIELDS.map(k=>[k,plan[k]])),trustedDirectRelayerAddress:plan.trustedDirectRelayerAddress,
     bridgePolicyHash:plan.bridgePolicyHash,zkPassportRootVerifierAddress:ROOT_VERIFIER,zkPassportDomain:plan.zkPassportDomain,zkPassportDevMode:false,
@@ -224,11 +235,16 @@ export async function runSelectedDeployment({plan,provider,getFactory,signerFact
 /** Offline construction only: the output must receive its own source/build and
  * ActionEnvelope review before an operator independently pins and executes it. */
 export async function prepareSelectedPlan(input, getFactory) {
-  keys(input,['environment','sourceShas','deploymentId','deployer','startNonce','trustedDirectRelayerAddress',
+  const hasNetwork = Object.hasOwn(input, 'network');
+  const hasChain = Object.hasOwn(input, 'chainId');
+  requireThat(hasNetwork === hasChain, 'identity network and chainId must be selected together');
+  const selected = hasNetwork ? { network: input.network, chainId: input.chainId } : { network: 'baseSepolia', chainId: 84532 };
+  identityNetwork(selected);
+  keys(input,[...(hasNetwork ? ['network','chainId'] : []),'environment','sourceShas','deploymentId','deployer','startNonce','trustedDirectRelayerAddress',
     'permitIssuer','validatorPubkeys','rootVerifierCodeHash','fees','actionEnvelopeId'],'planning input');
   keys(input.fees,Object.keys(CONTRACTS),'deployment fees');
   const {fees,...core}=input;
-  const plan={...core,schema:'solslot.selected-deployment-plan.v1',network:'baseSepolia',chainId:84532,
+  const plan={...core,schema:'solslot.selected-deployment-plan.v1',...selected,
     releaseIdentity:hashObject({schema:'solslot.enrollment-release.v1',sourceShas:input.sourceShas}),
     zkPassportDomain:input.environment === 'staging-alpha' ? 'staging.solslot.com' : 'solslot.com',
     zkPassportDevMode:false,zkPassportRootVerifierAddress:ROOT_VERIFIER,bridgeModuleHash:BRIDGE_MODULE_HASH};

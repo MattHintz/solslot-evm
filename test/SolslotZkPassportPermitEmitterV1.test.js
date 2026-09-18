@@ -31,6 +31,26 @@ describe('SolslotZkPassportPermitEmitterV1', () => {
     expect(await emitter.permitHash(vector.permit)).to.equal(vector.permitHash);
     expect(await emitter.permitValidatorMessage(vector.legacyValidatorMessage, vector.permitHash)).to.equal(vector.validatorMessage);
   });
+  it('matches the Base identity vector and keeps the EIP-712 permit distinct from Base Sepolia', async () => {
+    const baseVector=JSON.parse(readFileSync(new URL('./fixtures/enrollment-permit-base-identity-v1.json',import.meta.url)));
+    const { emitter } = await fixture();
+    expect(await emitter.permitHash(baseVector.permit)).to.equal(baseVector.permitHash);
+    expect(await emitter.permitValidatorMessage(baseVector.legacyValidatorMessage,baseVector.permitHash)).to.equal(baseVector.validatorMessage);
+    const {domain,message}=baseVector.permitSigningTypedData;
+    expect(domain.chainId).to.equal(8453);
+    expect(ethers.TypedDataEncoder.hash(domain,types,message)).not.to.equal(
+      ethers.TypedDataEncoder.hash({...domain,chainId:84532},types,message));
+  });
+  it('rejects stale and future proof timestamps without consuming the permit or bridge', async () => {
+    const f=await fixture();
+    for (const timestamp of [f.fields.proofTimestamp-7*24*60*60-1, f.fields.proofTimestamp+3600]) {
+      await f.verifier.setFields({...f.fields,proofTimestamp:timestamp});
+      await expect(f.send()).to.be.revertedWithCustomError(f.emitter,
+        timestamp<f.fields.proofTimestamp ? 'StaleProofTimestamp' : 'FutureProofTimestamp');
+      expect(await f.emitter.consumedPermits(f.permit.permitId)).to.equal(false);
+      expect(await f.emitter.consumedBridgeCoins(f.permit.bridgeCoinId)).to.equal(false);
+    }
+  });
 
   it('commits both events and permanently consumes permit and bridge in direct BLS relay', async () => {
     const { emitter, permit, send } = await fixture();

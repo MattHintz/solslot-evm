@@ -17,8 +17,19 @@ permissions="$(stat -c '%a' "$keystore")"
 
 deployment_network=ethSepolia
 if [[ ${SOLSLOT_EVM_DEPLOYMENT_PLAN+x} ]]; then
-  deployment_network=baseSepolia
-  required_names=(SOLSLOT_BASE_SEPOLIA_RPC_URL SOLSLOT_EVM_DEPLOYMENT_PLAN SOLSLOT_EVM_PLAN_SHA256 SOLSLOT_ACTION_ENVELOPE_ID SOLSLOT_EVM_DEPLOYMENT_JOURNAL)
+  deployment_network="$(cd "$repo_dir" && node --input-type=module -e '
+    import {readCanonical, validatePlan} from "./scripts/selected-deployment.js";
+    const plan=validatePlan(readCanonical(process.env.SOLSLOT_EVM_DEPLOYMENT_PLAN, process.env.SOLSLOT_EVM_PLAN_SHA256));
+    console.log(plan.network);
+  ')"
+  if [[ "$deployment_network" == base ]]; then
+    rpc_variable=SOLSLOT_BASE_MAINNET_RPC_URL
+  elif [[ "$deployment_network" == baseSepolia ]]; then
+    rpc_variable=SOLSLOT_BASE_SEPOLIA_RPC_URL
+  else
+    printf 'Unsupported selected identity network\n' >&2; exit 1
+  fi
+  required_names=("$rpc_variable" SOLSLOT_EVM_DEPLOYMENT_PLAN SOLSLOT_EVM_PLAN_SHA256 SOLSLOT_ACTION_ENVELOPE_ID SOLSLOT_EVM_DEPLOYMENT_JOURNAL)
   [[ "${SOLSLOT_EVM_DEPLOYMENT_EXECUTE:-}" == approved ]] || { printf 'Explicit approved execution is required after plan review. Use the Node runner for public preview.\n' >&2; exit 1; }
 else
   required_names=(SOLSLOT_ETH_SEPOLIA_RPC_URL SOLSLOT_EVM_SOURCE_SHA SOLSLOT_PROTOCOL_SOURCE_SHA SOLSLOT_EVM_DEPLOYMENT_OUTPUT SOLSLOT_ZKPASSPORT_BRIDGE_POLICY_HASH SOLSLOT_ZKPASSPORT_BLS_RELAYER_ADDRESS SOLSLOT_ZKPASSPORT_DOMAIN)
@@ -27,8 +38,8 @@ for name in "${required_names[@]}"; do
   [[ -n "${!name:-}" ]] || { printf '%s is required\n' "$name" >&2; exit 1; }
 done
 # Public selected preflight runs before requesting the keystore passphrase.
-if [[ "$deployment_network" == baseSepolia ]]; then
-  (cd "$repo_dir" && SOLSLOT_EVM_DEPLOYMENT_EXECUTE=preview HARDHAT_NETWORK=baseSepolia node scripts/deploy-solslot-v2.js)
+if [[ ${SOLSLOT_EVM_DEPLOYMENT_PLAN+x} ]]; then
+  (cd "$repo_dir" && SOLSLOT_EVM_DEPLOYMENT_EXECUTE=preview HARDHAT_NETWORK="$deployment_network" node scripts/deploy-solslot-v2.js)
 fi
 
 read -r -s -p 'EVM operator keystore passphrase: ' passphrase

@@ -35,6 +35,18 @@ export default defineConfig({
       chainType: 'l1',
       chainId: 84532,
     },
+    selectedBaseLocal: {
+      type: 'edr-simulated',
+      chainType: 'l1',
+      chainId: 8453,
+    },
+    base: {
+      type: 'http',
+      chainType: 'op',
+      url: configVariable('SOLSLOT_BASE_MAINNET_RPC_URL'),
+      accounts: [],
+      chainId: 8453,
+    },
     baseSepolia: {
       type: 'http',
       chainType: 'op',

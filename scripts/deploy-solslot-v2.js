@@ -82,6 +82,7 @@ async function main() {
   // Validation and RPC identity precede any signer/key access.
   if (Object.hasOwn(process.env, 'SOLSLOT_EVM_DEPLOYMENT_PLAN')) {
     const plan = validatePlan(readCanonical(required('SOLSLOT_EVM_DEPLOYMENT_PLAN'), required('SOLSLOT_EVM_PLAN_SHA256')));
+    if (networkName !== plan.network) throw new Error('Hardhat network differs from selected identity plan');
     const execute = process.env.SOLSLOT_EVM_DEPLOYMENT_EXECUTE === 'approved';
     if (execute && required('SOLSLOT_ACTION_ENVELOPE_ID') !== plan.actionEnvelopeId) throw new Error('ActionEnvelope differs from plan');
     const result = await runSelectedDeployment({plan, provider: ethers.provider,
@@ -93,7 +94,7 @@ async function main() {
   }
   const chainId = (await ethers.provider.getNetwork()).chainId;
   if (chainId !== 11155111n && !(networkName === 'hardhat' && chainId === 31337n)) {
-    throw new Error('Legacy deployment requires Ethereum Sepolia; Base Sepolia requires an exact selected plan');
+    throw new Error('Legacy deployment requires Ethereum Sepolia; Base identity deployment requires an exact selected plan');
   }
   const deployer = await deploymentSigner();
   const bridgePolicyHash = required('SOLSLOT_ZKPASSPORT_BRIDGE_POLICY_HASH');

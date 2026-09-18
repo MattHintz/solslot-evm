@@ -10,6 +10,11 @@ contract MockSolslotZkPassportRootVerifier {
     bool public valid = true;
     bytes32 public uniqueIdentifier;
     address public helper;
+    bytes32 public requiredServiceConfigHash;
+
+    function requireServiceConfig(bytes32 expectedHash) external {
+        requiredServiceConfigHash = expectedHash;
+    }
 
     function configure(bool valid_, bytes32 uniqueIdentifier_, address helper_) external {
         valid = valid_;
@@ -17,11 +22,14 @@ contract MockSolslotZkPassportRootVerifier {
         helper = helper_;
     }
 
-    function verify(SolslotProofVerificationParams calldata)
+    function verify(SolslotProofVerificationParams calldata params)
         external
         view
         returns (bool, bytes32, address)
     {
+        if (requiredServiceConfigHash != bytes32(0)) {
+            require(keccak256(abi.encode(params.serviceConfig)) == requiredServiceConfigHash, "service config differs");
+        }
         return (valid, uniqueIdentifier, helper);
     }
 }
