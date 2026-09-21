@@ -50,8 +50,12 @@ interface ISolslotZkPassportVerifierHelper {
 
 /// @notice Verifies the 18+ Solslot alpha policy and returns only proof-derived fields.
 contract SolslotZkPassportVerifierAdapter is ISolslotZkPassportVerifierAdapter {
-    // ABI and public-input layout pinned against zkpassport-packages commit
-    // caa9cc08916babb5ac28ba5903a7518dd7a75775.
+    // Base's deployed 0.20.0 subverifier uses the three-field nullifier tail
+    // from zkpassport-packages ada23cd921781fc3670a6bbae4d31538ce4281b9.
+    // Older deployed versions use a different layout. New versions require
+    // an explicit compatibility review; the root's admin/registry trust stays upstream.
+    bytes32 public constant ACCEPTED_PROOF_VERSION =
+        0x0000001400000000000000000000000000000000000000000000000000000000;
     address public constant ZKPASSPORT_ROOT_VERIFIER =
         0x1D000001000EFD9a6371f4d90bB8920D5431c0D8;
     uint256 public constant DEFAULT_VALIDITY_SECONDS = 7 days;
@@ -64,6 +68,8 @@ contract SolslotZkPassportVerifierAdapter is ISolslotZkPassportVerifierAdapter {
     error ProofVerificationFailed();
     error InvalidHelperAddress();
     error InvalidPublicInputs();
+    error UnsupportedProofVersion(bytes32 version);
+    error QueryPolicyMismatch();
     error ScopeMismatch(string expected);
     error AgePolicyMismatch(uint8 expectedMinimumAge);
     error ProofTimestampOverflow(uint256 value);
@@ -88,6 +94,16 @@ contract SolslotZkPassportVerifierAdapter is ISolslotZkPassportVerifierAdapter {
         if (proof.length == 0) revert EmptyProof();
         SolslotProofVerificationParams memory params =
             abi.decode(proof, (SolslotProofVerificationParams));
+        if (params.version != ACCEPTED_PROOF_VERSION) {
+            revert UnsupportedProofVersion(params.version);
+        }
+        // AGE (1), two-byte payload length (2), minimum age (18), no upper
+        // bound (0). Reject all extra disclosure or bind records before the
+        // external verifier call. The root still checks this preimage against
+        // the cryptographically proven parameter commitment.
+        if (params.committedInputs.length != 5 || keccak256(params.committedInputs) != keccak256(hex"0100021200")) {
+            revert QueryPolicyMismatch();
+        }
         bytes32[] memory publicInputs = params.proofVerificationData.publicInputs;
         if (publicInputs.length < 8) revert InvalidPublicInputs();
 

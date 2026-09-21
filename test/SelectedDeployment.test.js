@@ -4,17 +4,18 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { prepareSelectedPlan, runSelectedDeployment, validatePlan, hashObject, readCanonical,
-  stableJson, ROOT_VERIFIER, CONTRACTS, selectedPolicy } from '../scripts/selected-deployment.js';
+  stableJson, ROOT_VERIFIER, CONTRACTS, selectedPolicy, selectedContext, deploymentRequests } from '../scripts/selected-deployment.js';
 const { ethers, networkHelpers }=await network.create('selectedLocal');
 const vector=JSON.parse(fs.readFileSync(new URL('./fixtures/enrollment-permit-v1.json',import.meta.url)));
+const baseVector=JSON.parse(fs.readFileSync(new URL('./fixtures/enrollment-permit-base-identity-v1.json',import.meta.url)));
 const b32=n=>'0x'+n.repeat(32);
 const directories=[];
-async function fixture() {
+async function fixture(selection = {}) {
   const wallet=ethers.Wallet.createRandom().connect(ethers.provider);
   await ethers.provider.send('hardhat_setBalance',[wallet.address,'0x1000000000000000000']);
   await ethers.provider.send('hardhat_setCode',[ROOT_VERIFIER,'0x60006000f3']);
   const sourceShas=Object.fromEntries(['protocol','evm','omnichain','api','legacyBackend','keyOfSolomon','samuel','customerWeb','adminPortal'].map((k,i)=>[k,(i+1).toString(16).repeat(40)]));
-  const plan=await prepareSelectedPlan({environment:'staging-alpha',sourceShas,deploymentId:b32('51'),
+  const plan=await prepareSelectedPlan({...selection,environment:'staging-alpha',sourceShas,deploymentId:b32('51'),
     deployer:wallet.address.toLowerCase(),startNonce:0,trustedDirectRelayerAddress:ethers.Wallet.createRandom().address.toLowerCase(),
     permitIssuer:ethers.Wallet.createRandom().address.toLowerCase(),validatorPubkeys:vector.validatorPubkeys,
     rootVerifierCodeHash:ethers.keccak256('0x60006000f3'),actionEnvelopeId:'AE-SOLSLOT-SYNTHETIC-LOCAL-ONLY',
@@ -34,6 +35,33 @@ describe('Selected deployment planning and durable outcomes',()=>{
   it('matches the independent Python/CLVM bridge vector',()=>{
     expect(selectedPolicy(vector.validatorPubkeys,vector.permit.contextHash)).to.equal(vector.bridgePolicyHash);
   });
+  it('matches the independent Base identity / Chia testnet11 context and bridge vector',()=>{
+    const c=baseVector.context;
+    const plan={environment:c.environment,network:'base',chainId:c.evmChainId,
+      attestationEmitterAddress:c.emitter,permitIssuer:c.issuer,deploymentId:c.deploymentId,releaseIdentity:c.releaseIdentity};
+    expect(selectedContext(plan)).to.equal(baseVector.permit.contextHash);
+    expect(selectedPolicy(baseVector.validatorPubkeys,selectedContext(plan))).to.equal(baseVector.bridgePolicyHash);
+    expect(baseVector.operationalEvmChainId).to.equal(84532);
+  });
+  it('requires an explicit network/chain pair and preserves the historical Sepolia default',async()=>{
+    const legacy=await fixture(); expect(legacy.plan.network).to.equal('baseSepolia'); expect(legacy.plan.chainId).to.equal(84532);
+    await rejected(()=>fixture({chainId:8453}),/selected together/);
+    await rejected(()=>fixture({network:'base'}),/selected together/);
+    await rejected(()=>fixture({network:'base',chainId:84532}),/identity network/);
+    await rejected(()=>fixture({network:'baseSepolia',chainId:8453}),/identity network/);
+    await rejected(()=>fixture({network:'ethMainnet',chainId:1}),/identity network/);
+  });
+  it('builds explicit Base identity transactions and a distinct testnet11 permit context without signing',async()=>{
+    const f=await fixture({network:'base',chainId:8453});
+    expect(validatePlan(f.plan)).to.equal(f.plan);
+    const requests=await deploymentRequests(f.plan,name=>ethers.getContractFactory(name));
+    expect(requests.every(tx=>tx.chainId===8453n)).to.equal(true);
+    const historical={...f.plan,network:'baseSepolia',chainId:84532};
+    expect(selectedContext(f.plan)).not.to.equal(selectedContext(historical));
+    expect(()=>validatePlan(edit(f.plan,p=>{p.network='baseSepolia';p.chainId=84532;}))).to.throw(/permit context/);
+    await rejected(()=>f.run({execute:false}),/selected identity network/);expect(f.signs()).to.equal(0);
+    expect(fs.readdirSync(f.directory)).to.deep.equal([]);
+  });
   it('public preview reconstructs all init code without accessing a signer or creating a journal',async()=>{
     const f=await fixture();const result=await f.run({execute:false,signerFactory:()=>{throw new Error('unexpected signer');}});
     expect(result.status).to.equal('planned');expect(fs.readdirSync(f.directory)).to.deep.equal([]);
@@ -48,7 +76,7 @@ describe('Selected deployment planning and durable outcomes',()=>{
   it('rejects compiled init-code drift and wrong RPC chain before signer access',async()=>{
     const f=await fixture();await rejected(()=>f.run({plan:edit(f.plan,p=>p.transactions.forwarder.initCodeHash=b32('44'))}),/init code/);
     const wrong=new Proxy(ethers.provider,{get:(t,k)=>k==='getNetwork'?async()=>({chainId:1n}):Reflect.get(t,k,t)?.bind?.(t)??Reflect.get(t,k,t)});
-    await rejected(()=>f.run({provider:wrong}),/Base Sepolia/);expect(f.signs()).to.equal(0);
+    await rejected(()=>f.run({provider:wrong}),/selected identity network/);expect(f.signs()).to.equal(0);
   });
   it('rejects missing root, occupied addresses, nonce conflict and insufficient maximum fees before signer access',async()=>{
     const f=await fixture();await ethers.provider.send('hardhat_setCode',[ROOT_VERIFIER,'0x']);await rejected(()=>f.run(),/root verifier/);
