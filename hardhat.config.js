@@ -40,6 +40,11 @@ export default defineConfig({
       chainType: 'l1',
       chainId: 8453,
     },
+    eligibilityLocal: {
+      type: 'edr-simulated',
+      chainType: 'l1',
+      chainId: 11155111,
+    },
     base: {
       type: 'http',
       chainType: 'op',

@@ -96,7 +96,6 @@ async function main() {
   if (chainId !== 11155111n && !(networkName === 'hardhat' && chainId === 31337n)) {
     throw new Error('Legacy deployment requires Ethereum Sepolia; Base identity deployment requires an exact selected plan');
   }
-  const deployer = await deploymentSigner();
   const bridgePolicyHash = required('SOLSLOT_ZKPASSPORT_BRIDGE_POLICY_HASH');
   const domain = required('SOLSLOT_ZKPASSPORT_DOMAIN');
   const directRelayerAddress = required('SOLSLOT_ZKPASSPORT_BLS_RELAYER_ADDRESS');
@@ -104,6 +103,15 @@ async function main() {
   const protocolSourceSha = requiredSha('SOLSLOT_PROTOCOL_SOURCE_SHA');
   const outputPath = path.resolve(required('SOLSLOT_EVM_DEPLOYMENT_OUTPUT'));
   const devMode = process.env.SOLSLOT_ZKPASSPORT_DEV_MODE === 'true';
+  const policyName = process.env.SOLSLOT_IDENTITY_POLICY || 'age-only';
+  if (!['age-only', 'age-sanctions-v1'].includes(policyName)) throw new Error('Unknown identity policy');
+  const eligibility = policyName === 'age-sanctions-v1';
+  if (eligibility && (domain !== 'solslot.com' || devMode)) throw new Error('Eligibility requires solslot.com and real passports');
+  if (eligibility && networkName !== 'hardhat') {
+    throw new Error('Eligibility deployment requires an exact SOLSLOT_EVM_DEPLOYMENT_PLAN and durable journal');
+  }
+  const identityPolicy = eligibility ? {schema:'solslot.identity-policy.v1',adapter:'SolslotZkPassportEligibilityVerifierV1',
+    domain:'solslot.com',devMode:false,minimumAge:18,sanctions:{countries:'all',lists:'all',strict:false}} : undefined;
   const confirmations = networkName === 'hardhat'
     ? 1
     : Number(process.env.SOLSLOT_EVM_CONFIRMATIONS || 12);
@@ -128,16 +136,17 @@ async function main() {
     throw new Error('Solslot V2 mainnet deployment is disabled during Alpha remediation');
   }
 
+  const deployer = await deploymentSigner();
   const Forwarder = await ethers.getContractFactory('SolslotForwarder', deployer);
   const forwarder = await Forwarder.deploy();
   await forwarder.waitForDeployment();
   const forwarderReceipt = await forwarder.deploymentTransaction().wait(confirmations);
 
   const Adapter = await ethers.getContractFactory(
-    'SolslotZkPassportVerifierAdapter',
+    eligibility ? 'SolslotZkPassportEligibilityVerifierV1' : 'SolslotZkPassportVerifierAdapter',
     deployer,
   );
-  const adapter = await Adapter.deploy(domain, devMode);
+  const adapter = eligibility ? await Adapter.deploy() : await Adapter.deploy(domain, devMode);
   await adapter.waitForDeployment();
   const adapterReceipt = await adapter.deploymentTransaction().wait(confirmations);
   const rootVerifierAddress = await adapter.ZKPASSPORT_ROOT_VERIFIER();
@@ -168,6 +177,7 @@ async function main() {
     schemaVersion: 2,
     protocolVersion: 'solslot-v2',
     credentialPolicyVersion: Number(await emitter.POLICY_VERSION()),
+    ...(identityPolicy ? { identityPolicy } : {}),
     network: networkName,
     chainId: Number((await ethers.provider.getNetwork()).chainId),
     confirmations,

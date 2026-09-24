@@ -101,9 +101,7 @@ contract SolslotZkPassportVerifierAdapter is ISolslotZkPassportVerifierAdapter {
         // bound (0). Reject all extra disclosure or bind records before the
         // external verifier call. The root still checks this preimage against
         // the cryptographically proven parameter commitment.
-        if (params.committedInputs.length != 5 || keccak256(params.committedInputs) != keccak256(hex"0100021200")) {
-            revert QueryPolicyMismatch();
-        }
+        _validateCommittedInputs(params.committedInputs);
         bytes32[] memory publicInputs = params.proofVerificationData.publicInputs;
         if (publicInputs.length < 8) revert InvalidPublicInputs();
 
@@ -125,6 +123,7 @@ contract SolslotZkPassportVerifierAdapter is ISolslotZkPassportVerifierAdapter {
         if (!helper.isAgeAboveOrEqual(MINIMUM_AGE, params.committedInputs)) {
             revert AgePolicyMismatch(MINIMUM_AGE);
         }
+        _verifyAdditionalPolicy(helperAddress, params.committedInputs);
 
         // Official layout: current date=2, scope=3, subscope=4, then parameter
         // commitments, nullifier type, scoped nullifier, and OPRF key hash.
@@ -159,4 +158,12 @@ contract SolslotZkPassportVerifierAdapter is ISolslotZkPassportVerifierAdapter {
     function _rootVerifierAddress() internal view virtual returns (address) {
         return ZKPASSPORT_ROOT_VERIFIER;
     }
+
+    function _validateCommittedInputs(bytes memory inputs) internal pure virtual {
+        if (inputs.length != 5 || keccak256(inputs) != keccak256(hex"0100021200")) {
+            revert QueryPolicyMismatch();
+        }
+    }
+
+    function _verifyAdditionalPolicy(address, bytes memory) internal view virtual {}
 }

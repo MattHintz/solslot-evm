@@ -1,4 +1,4 @@
-/** Exact-plan Base identity deployment. Public planning never accesses a key.
+/** Exact-plan identity deployment. Public planning never accesses a key.
  * A journal contains broadcastable authorizations, so keep it owner-only.
  * No timeout, missing receipt or fee change authorizes a replacement transaction.
  */
@@ -12,6 +12,16 @@ export const CONTRACTS = {
   verifierAdapter: 'SolslotZkPassportVerifierAdapter',
   attestationEmitter: 'SolslotZkPassportPermitEmitterV1',
 };
+export const ELIGIBILITY_CONTRACTS = Object.freeze({
+  forwarder: 'SolslotForwarder',
+  verifierAdapter: 'SolslotZkPassportEligibilityVerifierV1',
+  attestationEmitter: 'SolslotZkPassportAttestationEmitter',
+});
+export const ELIGIBILITY_POLICY = Object.freeze({schema:'solslot.identity-policy.v1',
+  adapter:'SolslotZkPassportEligibilityVerifierV1',domain:'solslot.com',devMode:false,minimumAge:18,
+  sanctions:Object.freeze({countries:'all',lists:'all',strict:false})});
+const ELIGIBILITY_SCHEMA = 'solslot.sepolia-eligibility-deployment-plan.v1';
+export const ELIGIBILITY_BRIDGE_MODULE_HASH = '0x341151935b773901c3f31db323372c88953d96f44a06345cfab9bba2f06ac5fa';
 const SOURCES = ['protocol','evm','omnichain','api','legacyBackend','keyOfSolomon','samuel','customerWeb','adminPortal'];
 const ADDRESS_FIELDS = ['forwarderAddress','verifierAdapterAddress','attestationEmitterAddress'];
 const PLAN_FIELDS = ['schema','environment','network','chainId','sourceShas','releaseIdentity','deploymentId',
@@ -47,6 +57,20 @@ export function selectedPolicy(validators, context) {
   for (const hash of hashes.reverse()) curried=listHashes([atom('0x04'),pair(atom('0x01'),hash),curried]);
   return listHashes([atom('0x02'),pair(atom('0x01'),BRIDGE_MODULE_HASH),curried]);
 }
+export function eligibilityBridgePolicy(validators) {
+  requireThat(Array.isArray(validators) && validators.length === 3 && new Set(validators).size === 3,'three distinct validators are required');
+  validators.forEach(v=>hex(v,48,'validator public key'));
+  let curried=atom('0x01');
+  for (const hash of [list(validators),atom('0x02')].reverse()) curried=listHashes([atom('0x04'),pair(atom('0x01'),hash),curried]);
+  return listHashes([atom('0x02'),pair(atom('0x01'),ELIGIBILITY_BRIDGE_MODULE_HASH),curried]);
+}
+function eligibility(plan) { return plan.schema === ELIGIBILITY_SCHEMA; }
+function deploymentSpec(plan) {
+  return eligibility(plan) ? {contracts:ELIGIBILITY_CONTRACTS,args:[[],[],[plan.verifierAdapterAddress,
+    plan.bridgePolicyHash,plan.forwarderAddress,plan.trustedDirectRelayerAddress]]}
+    : {contracts:CONTRACTS,args:[[],[plan.zkPassportDomain,false],[plan.verifierAdapterAddress,plan.bridgePolicyHash,
+      plan.forwarderAddress,plan.trustedDirectRelayerAddress,plan.permitIssuer,plan.permitContextHash]]};
+}
 
 const IDENTITY_NETWORKS = Object.freeze({
   baseSepolia: { chainId: 84532, clvmAtom: '0x014a34' },
@@ -63,21 +87,30 @@ export function selectedContext(plan) {
     ethers.toUtf8Bytes('testnet11'),selected.clvmAtom,plan.attestationEmitterAddress,plan.permitIssuer,plan.deploymentId,plan.releaseIdentity]);
 }
 export function validatePlan(plan) {
-  keys(plan, PLAN_FIELDS, 'deployment plan');
+  const isEligibility=eligibility(plan);
+  const fields=isEligibility ? [...PLAN_FIELDS.filter(k=>!['permitIssuer','permitContextHash'].includes(k)), 'identityPolicy'] : PLAN_FIELDS;
+  keys(plan, fields, 'deployment plan');
   const { planHash, ...unsigned } = plan;
   requireThat(planHash === hashObject(unsigned), 'deployment plan hash differs');
-  requireThat(plan.schema === 'solslot.selected-deployment-plan.v1', 'deployment plan schema differs');
-  identityNetwork(plan);
+  requireThat(isEligibility || plan.schema === 'solslot.selected-deployment-plan.v1', 'deployment plan schema differs');
+  if (isEligibility) {
+    requireThat(plan.network === 'ethSepolia' && plan.chainId === 11155111 && plan.environment === 'production-alpha', 'eligibility requires solslot.com on Ethereum Sepolia');
+    requireThat(stableJson(plan.identityPolicy) === stableJson(ELIGIBILITY_POLICY),'identity policy differs');
+  } else identityNetwork(plan);
   requireThat(['staging-alpha','production-alpha'].includes(plan.environment) && plan.zkPassportDomain === (plan.environment === 'staging-alpha' ? 'staging.solslot.com' : 'solslot.com') && plan.zkPassportDevMode === false, 'deployment host or devMode differs');
   keys(plan.sourceShas, SOURCES, 'source revisions');
   requireThat(Object.values(plan.sourceShas).every(v => typeof v === 'string' && /^[0-9a-f]{40}$/.test(v) && v !== '0'.repeat(40)), 'nine nonzero Git revisions are required');
   requireThat(plan.releaseIdentity === hashObject({schema:'solslot.enrollment-release.v1',sourceShas:plan.sourceShas}), 'release identity differs');
-  for (const field of ['deployer',...ADDRESS_FIELDS,'trustedDirectRelayerAddress','permitIssuer']) hex(plan[field],20,field);
-  for (const field of ['deploymentId','bridgePolicyHash','rootVerifierCodeHash','permitContextHash']) hex(plan[field],32,field);
+  for (const field of ['deployer',...ADDRESS_FIELDS,'trustedDirectRelayerAddress',...(!isEligibility?['permitIssuer']:[])]) hex(plan[field],20,field);
+  for (const field of ['deploymentId','bridgePolicyHash','rootVerifierCodeHash',...(!isEligibility?['permitContextHash']:[])]) hex(plan[field],32,field);
   integer(plan.startNonce,'startNonce'); requireThat(plan.startNonce <= Number.MAX_SAFE_INTEGER-3,'startNonce overflows');
   requireThat(plan.zkPassportRootVerifierAddress === ROOT_VERIFIER, 'root verifier differs');
-  requireThat(plan.permitContextHash === selectedContext(plan),'permit context does not reconstruct');
-  requireThat(plan.bridgeModuleHash === BRIDGE_MODULE_HASH && plan.bridgePolicyHash === selectedPolicy(plan.validatorPubkeys,plan.permitContextHash),'bridge policy does not reconstruct');
+  if (isEligibility) {
+    requireThat(plan.bridgeModuleHash === ELIGIBILITY_BRIDGE_MODULE_HASH && plan.bridgePolicyHash === eligibilityBridgePolicy(plan.validatorPubkeys),'eligibility bridge policy does not reconstruct');
+  } else {
+    requireThat(plan.permitContextHash === selectedContext(plan),'permit context does not reconstruct');
+    requireThat(plan.bridgeModuleHash === BRIDGE_MODULE_HASH && plan.bridgePolicyHash === selectedPolicy(plan.validatorPubkeys,plan.permitContextHash),'bridge policy does not reconstruct');
+  }
   requireThat(typeof plan.actionEnvelopeId === 'string' && /^AE-SOLSLOT-[A-Z0-9-]{1,128}$/.test(plan.actionEnvelopeId), 'exact ActionEnvelope identifier is required');
   keys(plan.transactions,Object.keys(CONTRACTS),'transactions');
   Object.keys(CONTRACTS).forEach((name,i) => {
@@ -90,10 +123,9 @@ export function validatePlan(plan) {
   return plan;
 }
 export async function deploymentRequests(plan, getFactory) {
-  const args=[[],[plan.zkPassportDomain,false],[plan.verifierAdapterAddress,plan.bridgePolicyHash,
-    plan.forwarderAddress,plan.trustedDirectRelayerAddress,plan.permitIssuer,plan.permitContextHash]];
+  const {contracts,args}=deploymentSpec(plan);
   const requests=[];
-  for (const [i,[name,contract]] of Object.entries(CONTRACTS).entries()) {
+  for (const [i,[name,contract]] of Object.entries(contracts).entries()) {
     const factory=await getFactory(contract); const deploy=await factory.getDeployTransaction(...args[i]);
     const fixed=plan.transactions[name];
     requireThat(ethers.keccak256(deploy.data) === fixed.initCodeHash, `${name} compiled init code differs from reviewed plan`);
@@ -219,11 +251,12 @@ export async function runSelectedDeployment({plan,provider,getFactory,signerFact
   const root=await provider.getCode(ROOT_VERIFIER,state.peak.number);
   requireThat(ethers.keccak256(root) === plan.rootVerifierCodeHash,'root verifier changed at evidence snapshot');runtimeCodeHashes.zkPassportRootVerifier=plan.rootVerifierCodeHash;
   requireThat((await provider.getBlock(state.peak.number))?.hash === state.peak.hash,'chain reorganized during runtime observation');
-  const deployment={schemaVersion:3,protocolVersion:'solslot-v2',credentialPolicyVersion:2,network:plan.network,chainId:plan.chainId,
+  const deployment={schemaVersion:eligibility(plan)?2:3,protocolVersion:'solslot-v2',credentialPolicyVersion:2,network:plan.network,chainId:plan.chainId,
     sourceShas:plan.sourceShas,deployer:plan.deployer,startNonce:plan.startNonce,
     ...Object.fromEntries(ADDRESS_FIELDS.map(k=>[k,plan[k]])),trustedDirectRelayerAddress:plan.trustedDirectRelayerAddress,
     bridgePolicyHash:plan.bridgePolicyHash,zkPassportRootVerifierAddress:ROOT_VERIFIER,zkPassportDomain:plan.zkPassportDomain,zkPassportDevMode:false,
-    permitIssuer:plan.permitIssuer,permitContextHash:plan.permitContextHash,deploymentId:plan.deploymentId,releaseIdentity:plan.releaseIdentity,
+    ...(eligibility(plan)?{identityPolicy:plan.identityPolicy}:{permitIssuer:plan.permitIssuer,permitContextHash:plan.permitContextHash}),
+    deploymentId:plan.deploymentId,releaseIdentity:plan.releaseIdentity,
     deploymentTransactions:Object.fromEntries(Object.keys(CONTRACTS).map((name,i)=>[name,{hash:hashes[i],blockNumber:state.receipts[i].blockNumber,
       blockHash:state.receipts[i].blockHash,nonce:requests[i].nonce,initCodeHash:ethers.keccak256(requests[i].data)}])),runtimeCodeHashes};
   const artifact={...deployment,artifactHash:hashObject(deployment)}; const output=path.join(journalDirectory,'deployment.json');
@@ -254,6 +287,31 @@ export async function prepareSelectedPlan(input, getFactory) {
     plan.trustedDirectRelayerAddress,plan.permitIssuer,plan.permitContextHash]];
   plan.transactions={};
   for (const [i,[name,contract]] of Object.entries(CONTRACTS).entries()) {
+    keys(fees[name],['gasLimit','maxFeePerGas','maxPriorityFeePerGas'],'fixed deployment fee');
+    const tx=await (await getFactory(contract)).getDeployTransaction(...args[i]);
+    plan.transactions[name]={...fees[name],nonce:input.startNonce+i,initCodeHash:ethers.keccak256(tx.data)};
+  }
+  plan.planHash=hashObject(plan);return validatePlan(plan);
+}
+
+/** Explicit Sepolia age + sanctions deployment; no permit-activation migration.
+ * Its legacy bridge puzzle is reconstructed from the three reviewed BLS keys.
+ */
+export async function prepareEligibilityPlan(input, getFactory) {
+  keys(input,['environment','network','chainId','sourceShas','deploymentId','deployer','startNonce',
+    'trustedDirectRelayerAddress','validatorPubkeys','rootVerifierCodeHash','fees','actionEnvelopeId'],'eligibility planning input');
+  keys(input.fees,Object.keys(ELIGIBILITY_CONTRACTS),'deployment fees');
+  requireThat(input.environment === 'production-alpha' && input.network === 'ethSepolia' && input.chainId === 11155111,
+    'eligibility requires solslot.com on Ethereum Sepolia');
+  const {fees,...core}=input;
+  const plan={...core,schema:ELIGIBILITY_SCHEMA,identityPolicy:ELIGIBILITY_POLICY,
+    releaseIdentity:hashObject({schema:'solslot.enrollment-release.v1',sourceShas:input.sourceShas}),
+    zkPassportDomain:'solslot.com',zkPassportDevMode:false,zkPassportRootVerifierAddress:ROOT_VERIFIER,
+    bridgeModuleHash:ELIGIBILITY_BRIDGE_MODULE_HASH,bridgePolicyHash:eligibilityBridgePolicy(input.validatorPubkeys)};
+  ADDRESS_FIELDS.forEach((field,i)=>{plan[field]=ethers.getCreateAddress({from:input.deployer,nonce:input.startNonce+i}).toLowerCase();});
+  const {contracts,args}=deploymentSpec(plan);
+  plan.transactions={};
+  for (const [i,[name,contract]] of Object.entries(contracts).entries()) {
     keys(fees[name],['gasLimit','maxFeePerGas','maxPriorityFeePerGas'],'fixed deployment fee');
     const tx=await (await getFactory(contract)).getDeployTransaction(...args[i]);
     plan.transactions[name]={...fees[name],nonce:input.startNonce+i,initCodeHash:ethers.keccak256(tx.data)};
