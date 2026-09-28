@@ -5,18 +5,20 @@ import os from 'node:os';
 import path from 'node:path';
 import { prepareEligibilityPlan, eligibilityBridgePolicy, ELIGIBILITY_BRIDGE_MODULE_HASH,
   ELIGIBILITY_CONTRACTS, ELIGIBILITY_POLICY, ROOT_VERIFIER, runSelectedDeployment,
+  prepareEligibilityCompatibilityPlan, ELIGIBILITY_COMPATIBILITY_POLICY, ELIGIBILITY_PROOF_VERSIONS,
   readCanonical, validatePlan, hashObject, deploymentRequests } from '../scripts/selected-deployment.js';
 
 const {ethers,networkHelpers}=await network.create('eligibilityLocal');
 const vector=JSON.parse(fs.readFileSync(new URL('./fixtures/sepolia-eligibility-bridge.json',import.meta.url)));
 const directories=[];
 after(()=>directories.forEach(p=>fs.rmSync(p,{recursive:true,force:true})));
-async function fixture() {
+async function fixture(compatibility=false) {
   const wallet=ethers.Wallet.createRandom().connect(ethers.provider);
   await ethers.provider.send('hardhat_setBalance',[wallet.address,'0x1000000000000000000']);
   await ethers.provider.send('hardhat_setCode',[ROOT_VERIFIER,'0x60006000f3']);
   const sourceShas=Object.fromEntries(['protocol','evm','omnichain','api','legacyBackend','keyOfSolomon','samuel','customerWeb','adminPortal'].map((k,i)=>[k,(i+1).toString(16).repeat(40)]));
-  const plan=await prepareEligibilityPlan({environment:'production-alpha',network:'ethSepolia',chainId:11155111,
+  const prepare=compatibility?prepareEligibilityCompatibilityPlan:prepareEligibilityPlan;
+  const plan=await prepare({environment:'production-alpha',network:'ethSepolia',chainId:11155111,
     sourceShas,deploymentId:'0x'+'61'.repeat(32),deployer:wallet.address.toLowerCase(),startNonce:0,
     trustedDirectRelayerAddress:ethers.Wallet.createRandom().address.toLowerCase(),validatorPubkeys:vector.validatorPubkeys,
     rootVerifierCodeHash:ethers.keccak256('0x60006000f3'),actionEnvelopeId:'AE-SOLSLOT-ELIGIBILITY-LOCAL-TEST',
@@ -77,5 +79,33 @@ describe('Sepolia full-testnet eligibility deployment',()=>{
     const emitter=await ethers.getContractAt('SolslotZkPassportAttestationEmitter',artifact.attestationEmitterAddress);
     expect(await emitter.bridgePolicyHash()).to.equal(vector.policyHash);
     expect((await f.run({signerFactory:noKey})).artifactHash).to.equal(artifact.artifactHash);
+  });
+
+  it('binds V2 init code and explicit proof versions while preserving old plan validation',async()=>{
+    const f=await fixture(true);
+    expect(f.plan.identityPolicy).to.deep.equal(ELIGIBILITY_COMPATIBILITY_POLICY);
+    expect(f.plan.acceptedProofVersions).to.deep.equal(ELIGIBILITY_PROOF_VERSIONS);
+    expect((await f.run({execute:false})).status).to.equal('planned');
+    for(const change of [
+      p=>p.acceptedProofVersions.push('0x'+'16'.repeat(32)),
+      p=>p.identityPolicy.adapter='SolslotZkPassportEligibilityVerifierV1',
+      p=>p.schema='solslot.sepolia-eligibility-deployment-plan.v1',
+      p=>delete p.acceptedProofVersions,
+    ]) await rejects(()=>f.run({plan:edit(f.plan,change)}),/.+/);
+    expect(f.signs()).to.equal(0);
+  });
+
+  it('deploys the compatibility emitter only in the local simulator and records its immutable binding',async()=>{
+    const f=await fixture(true);
+    expect((await f.run()).status).to.equal('submitted');
+    for(let i=0;i<3;i++) {await networkHelpers.mine(12);expect((await f.run()).status).to.equal(i===2?'deployed_awaiting_independent_review':'submitted');}
+    const artifact=readCanonical(path.join(f.directory,'deployment.json'));
+    expect(artifact.acceptedProofVersions).to.deep.equal(ELIGIBILITY_PROOF_VERSIONS);
+    const adapter=await ethers.getContractAt('SolslotZkPassportEligibilityVerifierV2',artifact.verifierAdapterAddress);
+    for(const version of ELIGIBILITY_PROOF_VERSIONS) expect(await adapter.supportsProofVersion(version)).to.equal(true);
+    const emitter=await ethers.getContractAt('SolslotZkPassportAttestationEmitter',artifact.attestationEmitterAddress);
+    expect((await emitter.verifier()).toLowerCase()).to.equal(artifact.verifierAdapterAddress);
+    expect(await emitter.bridgePolicyHash()).to.equal(vector.policyHash);
+    expect(await adapter.domain()).to.equal('solslot.com');expect(await adapter.devMode()).to.equal(false);
   });
 });

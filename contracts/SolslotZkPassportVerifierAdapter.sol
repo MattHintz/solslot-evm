@@ -94,7 +94,7 @@ contract SolslotZkPassportVerifierAdapter is ISolslotZkPassportVerifierAdapter {
         if (proof.length == 0) revert EmptyProof();
         SolslotProofVerificationParams memory params =
             abi.decode(proof, (SolslotProofVerificationParams));
-        if (params.version != ACCEPTED_PROOF_VERSION) {
+        if (!supportsProofVersion(params.version)) {
             revert UnsupportedProofVersion(params.version);
         }
         // AGE (1), two-byte payload length (2), minimum age (18), no upper
@@ -153,6 +153,12 @@ contract SolslotZkPassportVerifierAdapter is ISolslotZkPassportVerifierAdapter {
             serviceSubscopeHash: publicInputs[4],
             proofTimestamp: uint64(timestamp)
         });
+    }
+
+    /// @notice Versions whose public-input layout this adapter explicitly supports.
+    /// @dev A registered upstream version is not automatically a supported version.
+    function supportsProofVersion(bytes32 version) public pure virtual returns (bool) {
+        return version == ACCEPTED_PROOF_VERSION;
     }
 
     function _rootVerifierAddress() internal view virtual returns (address) {

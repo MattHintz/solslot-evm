@@ -21,6 +21,15 @@ export const ELIGIBILITY_POLICY = Object.freeze({schema:'solslot.identity-policy
   adapter:'SolslotZkPassportEligibilityVerifierV1',domain:'solslot.com',devMode:false,minimumAge:18,
   sanctions:Object.freeze({countries:'all',lists:'all',strict:false})});
 const ELIGIBILITY_SCHEMA = 'solslot.sepolia-eligibility-deployment-plan.v1';
+const ELIGIBILITY_COMPATIBILITY_SCHEMA = 'solslot.sepolia-eligibility-deployment-plan.v2';
+export const ELIGIBILITY_COMPATIBILITY_CONTRACTS = Object.freeze({...ELIGIBILITY_CONTRACTS,
+  verifierAdapter:'SolslotZkPassportEligibilityVerifierV2'});
+export const ELIGIBILITY_COMPATIBILITY_POLICY = Object.freeze({...ELIGIBILITY_POLICY,
+  adapter:'SolslotZkPassportEligibilityVerifierV2'});
+export const ELIGIBILITY_PROOF_VERSIONS = Object.freeze([
+  '0x0000001400000000000000000000000000000000000000000000000000000000',
+  '0x0000001500000000000000000000000000000000000000000000000000000000',
+]);
 export const ELIGIBILITY_BRIDGE_MODULE_HASH = '0x341151935b773901c3f31db323372c88953d96f44a06345cfab9bba2f06ac5fa';
 const SOURCES = ['protocol','evm','omnichain','api','legacyBackend','keyOfSolomon','samuel','customerWeb','adminPortal'];
 const ADDRESS_FIELDS = ['forwarderAddress','verifierAdapterAddress','attestationEmitterAddress'];
@@ -64,9 +73,10 @@ export function eligibilityBridgePolicy(validators) {
   for (const hash of [list(validators),atom('0x02')].reverse()) curried=listHashes([atom('0x04'),pair(atom('0x01'),hash),curried]);
   return listHashes([atom('0x02'),pair(atom('0x01'),ELIGIBILITY_BRIDGE_MODULE_HASH),curried]);
 }
-function eligibility(plan) { return plan.schema === ELIGIBILITY_SCHEMA; }
+function eligibilityCompatibility(plan) { return plan.schema === ELIGIBILITY_COMPATIBILITY_SCHEMA; }
+function eligibility(plan) { return plan.schema === ELIGIBILITY_SCHEMA || eligibilityCompatibility(plan); }
 function deploymentSpec(plan) {
-  return eligibility(plan) ? {contracts:ELIGIBILITY_CONTRACTS,args:[[],[],[plan.verifierAdapterAddress,
+  return eligibility(plan) ? {contracts:eligibilityCompatibility(plan) ? ELIGIBILITY_COMPATIBILITY_CONTRACTS : ELIGIBILITY_CONTRACTS,args:[[],[],[plan.verifierAdapterAddress,
     plan.bridgePolicyHash,plan.forwarderAddress,plan.trustedDirectRelayerAddress]]}
     : {contracts:CONTRACTS,args:[[],[plan.zkPassportDomain,false],[plan.verifierAdapterAddress,plan.bridgePolicyHash,
       plan.forwarderAddress,plan.trustedDirectRelayerAddress,plan.permitIssuer,plan.permitContextHash]]};
@@ -88,14 +98,16 @@ export function selectedContext(plan) {
 }
 export function validatePlan(plan) {
   const isEligibility=eligibility(plan);
-  const fields=isEligibility ? [...PLAN_FIELDS.filter(k=>!['permitIssuer','permitContextHash'].includes(k)), 'identityPolicy'] : PLAN_FIELDS;
+  const fields=isEligibility ? [...PLAN_FIELDS.filter(k=>!['permitIssuer','permitContextHash'].includes(k)), 'identityPolicy',
+    ...(eligibilityCompatibility(plan)?['acceptedProofVersions']:[])] : PLAN_FIELDS;
   keys(plan, fields, 'deployment plan');
   const { planHash, ...unsigned } = plan;
   requireThat(planHash === hashObject(unsigned), 'deployment plan hash differs');
   requireThat(isEligibility || plan.schema === 'solslot.selected-deployment-plan.v1', 'deployment plan schema differs');
   if (isEligibility) {
     requireThat(plan.network === 'ethSepolia' && plan.chainId === 11155111 && plan.environment === 'production-alpha', 'eligibility requires solslot.com on Ethereum Sepolia');
-    requireThat(stableJson(plan.identityPolicy) === stableJson(ELIGIBILITY_POLICY),'identity policy differs');
+    requireThat(stableJson(plan.identityPolicy) === stableJson(eligibilityCompatibility(plan)?ELIGIBILITY_COMPATIBILITY_POLICY:ELIGIBILITY_POLICY),'identity policy differs');
+    if(eligibilityCompatibility(plan)) requireThat(stableJson(plan.acceptedProofVersions) === stableJson(ELIGIBILITY_PROOF_VERSIONS),'proof versions differ');
   } else identityNetwork(plan);
   requireThat(['staging-alpha','production-alpha'].includes(plan.environment) && plan.zkPassportDomain === (plan.environment === 'staging-alpha' ? 'staging.solslot.com' : 'solslot.com') && plan.zkPassportDevMode === false, 'deployment host or devMode differs');
   keys(plan.sourceShas, SOURCES, 'source revisions');
@@ -256,6 +268,7 @@ export async function runSelectedDeployment({plan,provider,getFactory,signerFact
     ...Object.fromEntries(ADDRESS_FIELDS.map(k=>[k,plan[k]])),trustedDirectRelayerAddress:plan.trustedDirectRelayerAddress,
     bridgePolicyHash:plan.bridgePolicyHash,zkPassportRootVerifierAddress:ROOT_VERIFIER,zkPassportDomain:plan.zkPassportDomain,zkPassportDevMode:false,
     ...(eligibility(plan)?{identityPolicy:plan.identityPolicy}:{permitIssuer:plan.permitIssuer,permitContextHash:plan.permitContextHash}),
+    ...(eligibilityCompatibility(plan)?{acceptedProofVersions:plan.acceptedProofVersions}:{}),
     deploymentId:plan.deploymentId,releaseIdentity:plan.releaseIdentity,
     deploymentTransactions:Object.fromEntries(Object.keys(CONTRACTS).map((name,i)=>[name,{hash:hashes[i],blockNumber:state.receipts[i].blockNumber,
       blockHash:state.receipts[i].blockHash,nonce:requests[i].nonce,initCodeHash:ethers.keccak256(requests[i].data)}])),runtimeCodeHashes};
@@ -298,13 +311,24 @@ export async function prepareSelectedPlan(input, getFactory) {
  * Its legacy bridge puzzle is reconstructed from the three reviewed BLS keys.
  */
 export async function prepareEligibilityPlan(input, getFactory) {
+  return prepareEligibilityPlanVersion(input,getFactory,false);
+}
+
+/** Deploys compatibility contracts only. It cannot activate or amend genesis. */
+export async function prepareEligibilityCompatibilityPlan(input, getFactory) {
+  return prepareEligibilityPlanVersion(input,getFactory,true);
+}
+
+async function prepareEligibilityPlanVersion(input, getFactory, compatibility) {
   keys(input,['environment','network','chainId','sourceShas','deploymentId','deployer','startNonce',
     'trustedDirectRelayerAddress','validatorPubkeys','rootVerifierCodeHash','fees','actionEnvelopeId'],'eligibility planning input');
   keys(input.fees,Object.keys(ELIGIBILITY_CONTRACTS),'deployment fees');
   requireThat(input.environment === 'production-alpha' && input.network === 'ethSepolia' && input.chainId === 11155111,
     'eligibility requires solslot.com on Ethereum Sepolia');
   const {fees,...core}=input;
-  const plan={...core,schema:ELIGIBILITY_SCHEMA,identityPolicy:ELIGIBILITY_POLICY,
+  const plan={...core,schema:compatibility?ELIGIBILITY_COMPATIBILITY_SCHEMA:ELIGIBILITY_SCHEMA,
+    identityPolicy:compatibility?ELIGIBILITY_COMPATIBILITY_POLICY:ELIGIBILITY_POLICY,
+    ...(compatibility?{acceptedProofVersions:ELIGIBILITY_PROOF_VERSIONS}:{}),
     releaseIdentity:hashObject({schema:'solslot.enrollment-release.v1',sourceShas:input.sourceShas}),
     zkPassportDomain:'solslot.com',zkPassportDevMode:false,zkPassportRootVerifierAddress:ROOT_VERIFIER,
     bridgeModuleHash:ELIGIBILITY_BRIDGE_MODULE_HASH,bridgePolicyHash:eligibilityBridgePolicy(input.validatorPubkeys)};

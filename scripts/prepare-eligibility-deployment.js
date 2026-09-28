@@ -5,16 +5,18 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { artifacts } from 'hardhat';
 import { ethers } from 'ethers';
-import { prepareEligibilityPlan, stableJson } from './selected-deployment.js';
+import { prepareEligibilityPlan, prepareEligibilityCompatibilityPlan, stableJson } from './selected-deployment.js';
 
-const [inputPath, outputPath, ...extra] = process.argv.slice(2);
-if (!inputPath || !outputPath || extra.length) throw new Error('Usage: node scripts/prepare-eligibility-deployment.js INPUT.json OUTPUT.json');
+const [inputPath, outputPath, profile, ...extra] = process.argv.slice(2);
+if (!inputPath || !outputPath || extra.length || (profile !== undefined && profile !== '--compatibility-v2'))
+  throw new Error('Usage: node scripts/prepare-eligibility-deployment.js INPUT.json OUTPUT.json [--compatibility-v2]');
 const root = fileURLToPath(new URL('..', import.meta.url));
 const git = (...args) => execFileSync('git', args, {cwd:root, encoding:'utf8'}).trim();
 if (git('status','--porcelain')) throw new Error('Commit the reviewed EVM source before preparing a deployment plan');
 const input = JSON.parse(fs.readFileSync(inputPath, 'utf8'));
 if (input.sourceShas?.evm !== git('rev-parse','HEAD')) throw new Error('EVM source SHA differs from the reviewed checkout');
-const plan = await prepareEligibilityPlan(input, async name => {
+const prepare = profile === '--compatibility-v2' ? prepareEligibilityCompatibilityPlan : prepareEligibilityPlan;
+const plan = await prepare(input, async name => {
   const artifact = await artifacts.readArtifact(name);
   return new ethers.ContractFactory(artifact.abi, artifact.bytecode);
 });
