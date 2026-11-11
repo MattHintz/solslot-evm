@@ -6,10 +6,19 @@ const PARAM = 'tuple(bytes32,tuple(bytes32,bytes,bytes32[]),bytes,tuple(uint256,
 const VERSION = '0x0000001400000000000000000000000000000000000000000000000000000000';
 const VERSION_021 = '0x0000001500000000000000000000000000000000000000000000000000000000';
 const VERSION_0211 = '0x0000001500010000000000000000000000000000000000000000000000000000';
+const VERSION_022 = '0x0000001600000000000000000000000000000000000000000000000000000000';
 const b32 = n => ethers.zeroPadValue(ethers.toBeHex(n), 32);
 const AGE = '0100021200';
 const SANCTIONS = '090021' + '11'.repeat(32) + '00';
 const scope = 'vault:0x' + '22'.repeat(32);
+it('binds the ordinary attestation emitter to the V4 adapter in a local deployment', async () => {
+  const adapter = await (await ethers.getContractFactory('SolslotZkPassportEligibilityVerifierV4')).deploy();
+  const [relayer] = await ethers.getSigners();
+  const forwarder = await (await ethers.getContractFactory('SolslotForwarder')).deploy();
+  const emitter = await (await ethers.getContractFactory('SolslotZkPassportAttestationEmitter'))
+    .deploy(await adapter.getAddress(), b32(1), await forwarder.getAddress(), relayer.address);
+  expect(await emitter.verifier()).to.equal(await adapter.getAddress());
+});
 for (const [adapterContract, version] of [
   ['TestableSolslotEligibilityVerifier', VERSION],
   ['TestableSolslotEligibilityVerifierV2', VERSION],
@@ -17,6 +26,10 @@ for (const [adapterContract, version] of [
   ['TestableSolslotEligibilityVerifierV3', VERSION],
   ['TestableSolslotEligibilityVerifierV3', VERSION_021],
   ['TestableSolslotEligibilityVerifierV3', VERSION_0211],
+  ['TestableSolslotEligibilityVerifierV4', VERSION],
+  ['TestableSolslotEligibilityVerifierV4', VERSION_021],
+  ['TestableSolslotEligibilityVerifierV4', VERSION_0211],
+  ['TestableSolslotEligibilityVerifierV4', VERSION_022],
 ]) describe(`${adapterContract} version ${version.slice(0, 14)}`, () => {
   function proof(committedInputs = '0x' + AGE + SANCTIONS, type = 1, proofVersion = version, nullifier = b32(42)) {
     return ethers.AbiCoder.defaultAbiCoder().encode([PARAM], [[proofVersion,
@@ -74,7 +87,7 @@ for (const [adapterContract, version] of [
   it('rejects unknown proof versions before external root verification', async () => {
     const {root,adapter} = await setup();
     await root.requireServiceConfig(b32(99));
-    for (const other of [ethers.ZeroHash, VERSION.replace('0014', '0013'), VERSION.replace('0014', '0016'),
+    for (const other of [ethers.ZeroHash, VERSION.replace('0014', '0013'), '0x000000170000'+'00'.repeat(26),
       '0x000000150002'+'00'.repeat(26)]) {
       expect(await adapter.supportsProofVersion(other)).to.equal(false);
       await expect(adapter.verifyVaultProof(proof(undefined,1,other),scope))
@@ -85,14 +98,18 @@ for (const [adapterContract, version] of [
   it('retains V1 version restrictions and exposes supported versions', async () => {
     const {adapter} = await setup();
     expect(await adapter.supportsProofVersion(VERSION)).to.equal(true);
-    const accepts021 = adapterContract.endsWith('V2') || adapterContract.endsWith('V3');
+    const accepts021 = adapterContract.endsWith('V2') || adapterContract.endsWith('V3') || adapterContract.endsWith('V4');
     expect(await adapter.supportsProofVersion(VERSION_021)).to.equal(accepts021);
     if (!accepts021) await expect(adapter.verifyVaultProof(proof(undefined,1,VERSION_021),scope))
       .to.be.revertedWithCustomError(adapter,'UnsupportedProofVersion').withArgs(VERSION_021);
-    const accepts0211 = adapterContract.endsWith('V3');
+    const accepts0211 = adapterContract.endsWith('V3') || adapterContract.endsWith('V4');
     expect(await adapter.supportsProofVersion(VERSION_0211)).to.equal(accepts0211);
     if (!accepts0211) await expect(adapter.verifyVaultProof(proof(undefined,1,VERSION_0211),scope))
       .to.be.revertedWithCustomError(adapter,'UnsupportedProofVersion').withArgs(VERSION_0211);
+    const accepts022 = adapterContract.endsWith('V4');
+    expect(await adapter.supportsProofVersion(VERSION_022)).to.equal(accepts022);
+    if (!accepts022) await expect(adapter.verifyVaultProof(proof(undefined,1,VERSION_022),scope))
+      .to.be.revertedWithCustomError(adapter,'UnsupportedProofVersion').withArgs(VERSION_022);
   });
 
   it('requires a nonzero root-verified nullifier at the reviewed tail position', async () => {
