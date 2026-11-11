@@ -26,6 +26,8 @@ if [[ ${SOLSLOT_EVM_DEPLOYMENT_PLAN+x} ]]; then
     rpc_variable=SOLSLOT_BASE_MAINNET_RPC_URL
   elif [[ "$deployment_network" == baseSepolia ]]; then
     rpc_variable=SOLSLOT_BASE_SEPOLIA_RPC_URL
+  elif [[ "$deployment_network" == ethSepolia ]]; then
+    rpc_variable=SOLSLOT_ETH_SEPOLIA_RPC_URL
   else
     printf 'Unsupported selected identity network\n' >&2; exit 1
   fi
