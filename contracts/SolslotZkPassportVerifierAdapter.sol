@@ -104,6 +104,7 @@ contract SolslotZkPassportVerifierAdapter is ISolslotZkPassportVerifierAdapter {
         _validateCommittedInputs(params.committedInputs);
         bytes32[] memory publicInputs = params.proofVerificationData.publicInputs;
         if (publicInputs.length < 8) revert InvalidPublicInputs();
+        uint256 nullifierTypeIndex = publicInputs.length - _nullifierTypeOffset(params.version, publicInputs);
 
         params.serviceConfig.domain = domain;
         params.serviceConfig.scope = expectedServiceSubscope;
@@ -125,13 +126,13 @@ contract SolslotZkPassportVerifierAdapter is ISolslotZkPassportVerifierAdapter {
         }
         _verifyAdditionalPolicy(helperAddress, params.committedInputs);
 
-        // Official layout: current date=2, scope=3, subscope=4, then parameter
-        // commitments, nullifier type, scoped nullifier, and OPRF key hash.
+        // Date, scope and subscope keep their original indices across admitted
+        // layouts. The nullifier fields follow the parameter commitments.
         uint256 timestamp = helper.getProofTimestamp(publicInputs);
         if (timestamp > type(uint64).max) revert ProofTimestampOverflow(timestamp);
         if (timestamp != uint256(publicInputs[2])) revert InvalidPublicInputs();
 
-        uint256 nullifierType = uint256(publicInputs[publicInputs.length - 3]);
+        uint256 nullifierType = uint256(publicInputs[nullifierTypeIndex]);
         if (nullifierType > type(uint16).max) {
             revert NullifierTypeOverflow(nullifierType);
         }
@@ -141,7 +142,7 @@ contract SolslotZkPassportVerifierAdapter is ISolslotZkPassportVerifierAdapter {
         if (!devMode && nullifierType > 1) {
             revert MockNullifierTypeDisabled(nullifierType);
         }
-        bytes32 publicInputNullifier = publicInputs[publicInputs.length - 2];
+        bytes32 publicInputNullifier = publicInputs[nullifierTypeIndex + 1];
         if (uniqueIdentifier == bytes32(0) || uniqueIdentifier != publicInputNullifier) {
             revert NullifierMismatch(uniqueIdentifier, publicInputNullifier);
         }
@@ -159,6 +160,10 @@ contract SolslotZkPassportVerifierAdapter is ISolslotZkPassportVerifierAdapter {
     /// @dev A registered upstream version is not automatically a supported version.
     function supportsProofVersion(bytes32 version) public pure virtual returns (bool) {
         return version == ACCEPTED_PROOF_VERSION;
+    }
+
+    function _nullifierTypeOffset(bytes32, bytes32[] memory) internal pure virtual returns (uint256) {
+        return 3;
     }
 
     function _rootVerifierAddress() internal view virtual returns (address) {

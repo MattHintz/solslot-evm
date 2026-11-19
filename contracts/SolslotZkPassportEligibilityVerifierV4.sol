@@ -14,7 +14,7 @@ contract SolslotZkPassportEligibilityVerifierV4 is SolslotZkPassportEligibilityV
     bytes32 public constant PROOF_VERSION_0_22_0 =
         0x0000001600000000000000000000000000000000000000000000000000000000;
 
-    function supportsProofVersion(bytes32 version) public pure override returns (bool) {
+    function supportsProofVersion(bytes32 version) public pure virtual override returns (bool) {
         return version == ACCEPTED_PROOF_VERSION || version == PROOF_VERSION_0_21_0
             || version == PROOF_VERSION_0_21_1 || version == PROOF_VERSION_0_22_0;
     }
