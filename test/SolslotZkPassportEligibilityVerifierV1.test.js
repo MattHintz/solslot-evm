@@ -7,12 +7,13 @@ const VERSION = '0x0000001400000000000000000000000000000000000000000000000000000
 const VERSION_021 = '0x0000001500000000000000000000000000000000000000000000000000000000';
 const VERSION_0211 = '0x0000001500010000000000000000000000000000000000000000000000000000';
 const VERSION_022 = '0x0000001600000000000000000000000000000000000000000000000000000000';
+const VERSION_023 = '0x0000001700000000000000000000000000000000000000000000000000000000';
 const b32 = n => ethers.zeroPadValue(ethers.toBeHex(n), 32);
 const AGE = '0100021200';
 const SANCTIONS = '090021' + '11'.repeat(32) + '00';
 const scope = 'vault:0x' + '22'.repeat(32);
-it('binds the ordinary attestation emitter to the V4 adapter in a local deployment', async () => {
-  const adapter = await (await ethers.getContractFactory('SolslotZkPassportEligibilityVerifierV4')).deploy();
+for (const version of ['V4', 'V5']) it(`binds the ordinary attestation emitter to the ${version} adapter`, async () => {
+  const adapter = await (await ethers.getContractFactory('SolslotZkPassportEligibilityVerifier' + version)).deploy();
   const [relayer] = await ethers.getSigners();
   const forwarder = await (await ethers.getContractFactory('SolslotForwarder')).deploy();
   const emitter = await (await ethers.getContractFactory('SolslotZkPassportAttestationEmitter'))
@@ -30,10 +31,17 @@ for (const [adapterContract, version] of [
   ['TestableSolslotEligibilityVerifierV4', VERSION_021],
   ['TestableSolslotEligibilityVerifierV4', VERSION_0211],
   ['TestableSolslotEligibilityVerifierV4', VERSION_022],
+  ['TestableSolslotEligibilityVerifierV5', VERSION_022],
+  ['TestableSolslotEligibilityVerifierV5', VERSION_023],
 ]) describe(`${adapterContract} version ${version.slice(0, 14)}`, () => {
-  function proof(committedInputs = '0x' + AGE + SANCTIONS, type = 1, proofVersion = version, nullifier = b32(42)) {
+  const supportsNewLayout = adapterContract.endsWith('V5');
+  function proof(committedInputs = '0x' + AGE + SANCTIONS, type = 1, proofVersion = version, nullifier = b32(42), method = 100) {
+    const publicInputs = [b32(10), b32(11), b32(1800000000), b32(12), b32(13), b32(14)];
+    if (proofVersion === VERSION_023) publicInputs.push(b32(15));
+    publicInputs.push(b32(type), nullifier, ethers.ZeroHash);
+    if (proofVersion === VERSION_023 && method !== null) publicInputs.push(b32(method));
     return ethers.AbiCoder.defaultAbiCoder().encode([PARAM], [[proofVersion,
-      [b32(2), '0x1234', [b32(10),b32(11),b32(1800000000),b32(12),b32(13),b32(14),b32(type),nullifier,ethers.ZeroHash]],
+      [b32(2), '0x1234', publicInputs],
       committedInputs,[0,'attacker.example','different',true]]]);
   }
   async function setup() {
@@ -87,8 +95,10 @@ for (const [adapterContract, version] of [
   it('rejects unknown proof versions before external root verification', async () => {
     const {root,adapter} = await setup();
     await root.requireServiceConfig(b32(99));
-    for (const other of [ethers.ZeroHash, VERSION.replace('0014', '0013'), '0x000000170000'+'00'.repeat(26),
-      '0x000000150002'+'00'.repeat(26)]) {
+    const otherVersions = [ethers.ZeroHash, VERSION.replace('0014', '0013'),
+      '0x000000170001'+'00'.repeat(26), '0x000000150002'+'00'.repeat(26)];
+    if (!supportsNewLayout) otherVersions.push(VERSION_023);
+    for (const other of otherVersions) {
       expect(await adapter.supportsProofVersion(other)).to.equal(false);
       await expect(adapter.verifyVaultProof(proof(undefined,1,other),scope))
         .to.be.revertedWithCustomError(adapter,'UnsupportedProofVersion').withArgs(other);
@@ -98,18 +108,32 @@ for (const [adapterContract, version] of [
   it('retains V1 version restrictions and exposes supported versions', async () => {
     const {adapter} = await setup();
     expect(await adapter.supportsProofVersion(VERSION)).to.equal(true);
-    const accepts021 = adapterContract.endsWith('V2') || adapterContract.endsWith('V3') || adapterContract.endsWith('V4');
+    const accepts021 = /V[2-5]$/.test(adapterContract);
     expect(await adapter.supportsProofVersion(VERSION_021)).to.equal(accepts021);
     if (!accepts021) await expect(adapter.verifyVaultProof(proof(undefined,1,VERSION_021),scope))
       .to.be.revertedWithCustomError(adapter,'UnsupportedProofVersion').withArgs(VERSION_021);
-    const accepts0211 = adapterContract.endsWith('V3') || adapterContract.endsWith('V4');
+    const accepts0211 = /V[3-5]$/.test(adapterContract);
     expect(await adapter.supportsProofVersion(VERSION_0211)).to.equal(accepts0211);
     if (!accepts0211) await expect(adapter.verifyVaultProof(proof(undefined,1,VERSION_0211),scope))
       .to.be.revertedWithCustomError(adapter,'UnsupportedProofVersion').withArgs(VERSION_0211);
-    const accepts022 = adapterContract.endsWith('V4');
+    const accepts022 = /V[45]$/.test(adapterContract);
     expect(await adapter.supportsProofVersion(VERSION_022)).to.equal(accepts022);
     if (!accepts022) await expect(adapter.verifyVaultProof(proof(undefined,1,VERSION_022),scope))
       .to.be.revertedWithCustomError(adapter,'UnsupportedProofVersion').withArgs(VERSION_022);
+    expect(await adapter.supportsProofVersion(VERSION_023)).to.equal(supportsNewLayout);
+  });
+
+  if (version === VERSION_023) it('requires the new chip method and reads its proof-bound nullifier fields', async () => {
+    const {root, adapter} = await setup();
+    const fields = await adapter.verifyVaultProof(proof(), scope);
+    expect(fields.nullifierType).to.equal(1n);
+    expect(fields.scopedNullifier).to.equal(b32(42));
+    expect(fields.serviceSubscopeHash).to.equal(b32(13));
+    await root.requireServiceConfig(b32(99));
+    await expect(adapter.verifyVaultProof(proof(undefined, 1, version, undefined, null), scope))
+      .to.be.revertedWithCustomError(adapter, 'InvalidPublicInputs');
+    await expect(adapter.verifyVaultProof(proof(undefined, 1, version, undefined, 200), scope))
+      .to.be.revertedWithCustomError(adapter, 'UnsupportedVerificationMethod').withArgs(200);
   });
 
   it('requires a nonzero root-verified nullifier at the reviewed tail position', async () => {
